@@ -15,7 +15,7 @@ enum CoordinatesMode {
 #[derive(PartialEq)]
 enum UnitsMode {
     Millimeters,
-    Inches,
+    Inches, //TODO
     NotSet
 }
 
@@ -24,15 +24,15 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let file_path = &args[1];
 
-    // Read the file
-    let contents = fs::read_to_string(file_path)
-        .expect("Something went wrong reading the file");
-
     // Check that file is a g-code file
     if !file_path.ends_with(".gcode") {
         println!("The file is not a g-code file");
         return;
     }
+
+    // Read the file
+    let contents = fs::read_to_string(file_path)
+        .expect("Something went wrong reading the file");
 
     // Check that the file is not empty
     if contents.is_empty() {
@@ -40,7 +40,7 @@ fn main() {
         return;
     }
 
-    // Set log file, remove it if it already exists
+    // Set log file but remove it if it already exists
     let log_file_path = format!("{}.log", file_path);
     if std::path::Path::new(&log_file_path).exists() {
         fs::remove_file(&log_file_path).unwrap();
@@ -57,76 +57,83 @@ fn main() {
         .chain(fern::log_file(log_file_path).unwrap())
         .apply();
 
-    // Prepare variables
+    let optimized_file_path = format!("{}_optimized.gcode", file_path);
+    let mut optimized_file = fs::File::create(&optimized_file_path).unwrap();
+
+    // Process variables
     let mut line_number = 0;
-    let mut g0_count = 0;
-    let mut g1_count = 0;
-    let mut extrusion_distance = 0.0;
-    let mut travel_distance = 0.0;
     let mut last_position = (0.0, 0.0, 0.0);
     let mut position;
-    let mut current_z_layer = 0.0;
-    let mut current_feed_rate = 0;
-    let mut current_travel_rate = 0;
+    let mut current_layer = 0;
+    let mut current_z = 0.0;
     let mut last_extrusion = 0.0;
+    let mut lkh_total_extrusion = 0.0;
 
+    let mut lines_to_write: Vec<&str> = Vec::new();
+    
     let mut position_mode = CoordinatesMode::NotSet;
     let mut extruder_mode = CoordinatesMode::NotSet;
     let mut units_mode = UnitsMode::NotSet;
 
-    // Prepare tour files and variables
-    let mut layer = 0;
-    //let mut initial_tour_path = format!("{}.tour", layer);
-    let mut parameters_path = format!("{}.par", layer);
-    let mut tsp_path = format!("{}.tsp", layer);
-    let mut result_path = format!("result_{}.tour", layer);
-
+    // LKH variables
+    //let mut initial_tour_path = format!("{}.tour", current_layer);
+    let mut parameters_path = format!("{}.par", current_layer);
+    let mut tsp_path = format!("{}.tsp", current_layer);
+    let mut result_path = format!("result_{}.tour", current_layer);
+    
     let mut num_nodes = 1;
     let mut nodes = Vec::new();
-    nodes.push(last_position);
     let mut mandatories = HashMap::new();
     let mut feedrates = HashMap::new();
-    let mut lkh_extrusion_distance = 0.0;
-    let mut lkh_travel_distance = 0.0;
-    let mut lkh_extrusion = 0.0;
 
-    let mut lines_to_write: Vec<&str> = Vec::new();
-
-    const MINIMUM_NODES: i32 = 5; // minimum nodes for a layer to be considered for optimization
+    const MINIMUM_NODES: i32 = 5; // minimum nodes for a current_layer to be considered for optimization
     const DEFAULT_PRECISION: i32 = 1000; // for decimal places, 100 for 2, 1000 for 3, etc...
     const NUM_RUNS: i32 = 1;
     const TIME_LIMIT: i32 = 60; //seconds
 
-    let lkh: &str;
+    let lkh_program: &str;
+
+    // Statistics variables
+    let mut g0_count = 0;
+    let mut g1_count = 0;
+    let mut extrusion_distance = 0.0;
+    let mut travel_distance = 0.0;
+    let mut lkh_extrusion_distance = 0.0;
+    let mut lkh_travel_distance = 0.0;
+
+//---------------------------OS related section------------------------------//
+
     if env::consts::OS == "windows" {
         // Windows
-        lkh = "./LKH-2.exe";
+        lkh_program = "./LKH-2.exe";
     } else if env::consts::OS == "linux" {
         // Linux
-        lkh = "./LKH";
+        lkh_program = "./LKH";
     } else {
         // Unsupported OS
         println!("Unsupported OS");
         return;
     }
 
-    // Prepare new optimized g-code file
-    let optimized_file_path = format!("{}_optimized.gcode", file_path);
-    let mut optimized_file = fs::File::create(&optimized_file_path).unwrap();
+//-----------------------------START OF PROGRAM------------------------------//
+
+    nodes.push(last_position);
 
     // Parse the g-code file line by line
     for line in contents.lines() {
         line_number += 1;
-        let line_without_comment = line.split(';').next().unwrap();
+
+        // Remove comment from line
+        let line_w = line.split(';').next().unwrap();
         
-        match line.split_whitespace().next() {
+        match line_w.split_whitespace().next() {
 
             /* G Commands */
 
             Some("G0") | Some("G1") => { // G0/G1 X0 Y0 Z0 E0 F0 S0, [rapid] move to position
-                let command = line.split_whitespace().next().unwrap();
+                let command = line_w.split_whitespace().next().unwrap();
 
-                if line.starts_with("G0") {
+                if line_w.starts_with("G0") {
                     g0_count += 1;
                     
                 } else {
@@ -141,35 +148,35 @@ fn main() {
                 }
 
                 // Parse the line to get the position
-                position = get_position(line_without_comment, last_position);
-
-                let last_feed_rate = current_feed_rate;
-                let last_travel_rate = current_travel_rate;
-
-                // Check if extrusion is enabled
+                position = get_position(line_w, last_position);
+                
+                // Check if extrusion is enabled and process feed rate
                 let mut extrudes = false;
                 let mut extrusion = 0.0;
+                let mut feed_rate = 0;
+
                 for part in line.split_whitespace() {
                     if !extrudes && part.starts_with('E') && !part.starts_with("E-") {
+
                         extrudes = true;
                         extrusion = part[1..].parse().unwrap();
                         extrusion_distance += calculate_distance(last_position, position, &position_mode);
                     }
+
                     if part.starts_with('F') {
-                        current_feed_rate = part.strip_prefix('F').unwrap().parse().unwrap();
+                        feed_rate = part.strip_prefix('F').unwrap().parse().unwrap();
                     }
                 }
 
-                // Calculate the distance between the last position and the current position
+                // Calculate the distance between the last and current position
                 if !extrudes {
-                    current_travel_rate = current_feed_rate;
-                    current_feed_rate = last_feed_rate;
                     travel_distance += calculate_distance(last_position, position, &position_mode);
                 }
 
-                // Identify layer change
-                if position.2 != current_z_layer && extrudes {
+                // Process a change of layer and execute LKH
+                if position.2 != current_z && extrudes {
                     if num_nodes > MINIMUM_NODES {
+
                         // Write parameters file
                         let parameters = format!(
                             "PROBLEM_FILE = {}\n\
@@ -179,6 +186,7 @@ fn main() {
                             TIME_LIMIT = {}\n",
                             tsp_path, result_path, DEFAULT_PRECISION, NUM_RUNS, TIME_LIMIT
                         );
+
                         fs::write(parameters_path.clone(), parameters).unwrap();
 
                         // Write TSP file
@@ -189,8 +197,8 @@ fn main() {
                             DIMENSION: {}\n\
                             EDGE_WEIGHT_TYPE: EUC_3D\n\
                             NODE_COORD_SECTION\n",
-                            format_args!("Layer {}", layer),
-                            format_args!("Print optimization for layer {}", layer),
+                            format_args!("Layer {}", current_layer),
+                            format_args!("Print optimization for current_layer {}", current_layer),
                             num_nodes
                         );
 
@@ -212,7 +220,7 @@ fn main() {
                         fs::write(&tsp_path, tsp).unwrap();
 
                         // Run LKH
-                        std::process::Command::new(lkh)
+                        std::process::Command::new(lkh_program)
                             .arg(parameters_path.clone())
                             .output()
                             .expect("Failed to run LKH");
@@ -222,66 +230,90 @@ fn main() {
                         
                         let mut process = false;
                         let mut prev_node = 1;
+
                         for line in result.lines() {
                             if process {
                                 if line.starts_with("-1") {
                                     break;
                                 }
 
+                                // Gather next node position
                                 let node = line.parse::<i32>().unwrap();
                                 let n = nodes[node as usize - 1];
+
+                                let mut x = n.0;
+                                let mut y = n.1;
+                                let mut z = n.2;
+
+                                if position_mode == CoordinatesMode::Relative {
+                                    let p = nodes[prev_node as usize - 1];
+
+                                    x -= p.0;
+                                    y -= p.1;
+                                    z -= p.2;
+                                }
+
+                                // Prepare new g-code line
+                                let mut text = format!("X{} Y{} Z{}",
+                                    x, y, z
+                                );
+
                                 if (node - prev_node == 1 && mandatories.contains_key(&prev_node)) || 
                                     (node - prev_node == -1 && mandatories.contains_key(&node)) {
-                                    lkh_extrusion_distance += calculate_distance(nodes[prev_node as usize - 1], nodes[node as usize - 1], &position_mode);
+                                    lkh_extrusion_distance += calculate_distance(
+                                        nodes[prev_node as usize - 1], 
+                                        nodes[node as usize - 1], 
+                                        &position_mode
+                                    );
 
-                                    let mut e = mandatories.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap();
-                                    let f = feedrates.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap_or(&last_feed_rate);
+                                    // Take a change of direction into account
+                                    let mut e = mandatories.get(
+                                        if node - prev_node == 1 { &prev_node } 
+                                        else { &node }
+                                    ).unwrap();
 
-                                    lkh_extrusion += e;
+                                    lkh_total_extrusion += e;
                                     if extruder_mode == CoordinatesMode::Absolute {
-                                        e = &lkh_extrusion;
+                                        e = &lkh_total_extrusion;
                                     }
 
-                                    if position_mode == CoordinatesMode::Relative {
-                                        let p = nodes[prev_node as usize - 1];
-                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{:.5}",
-                                            n.0 - p.0, n.1 - p.1, n.2 - p.2, e
-                                        ).as_str());
-                                    } else {
-                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{:.5}",
-                                            n.0, n.1, n.2, e
-                                        ).as_str());
-                                    }
+                                    // Add extrusion to line
+                                    text = format!("G0 {} E{:.5}", text, e);
+
                                 } else {
-                                    lkh_travel_distance += calculate_distance(nodes[prev_node as usize - 1], nodes[node as usize - 1], &position_mode);
+                                    lkh_travel_distance += calculate_distance(
+                                        nodes[prev_node as usize - 1], 
+                                        nodes[node as usize - 1], 
+                                        &position_mode
+                                    );
 
-                                    let f = feedrates.get(&node).unwrap_or(&last_travel_rate);
-
-                                    if position_mode == CoordinatesMode::Relative {
-                                        let p = nodes[prev_node as usize - 1];
-                                        
-                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{}",
-                                            n.0 - p.0, n.1 - p.1, n.2 - p.2
-                                        ).as_str());
-                                    } else {
-                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{}",
-                                            n.0, n.1, n.2
-                                        ).as_str());
-                                    }
+                                    text = format!("G1 {}", text);
                                 }
+
+                                // Add feedrate if needed
+                                let f = feedrates.get(
+                                    if node - prev_node == 1 { &prev_node } 
+                                    else { &node }
+                                ).unwrap_or(&0);
+
+                                if f > &0 {
+                                    text = format!("{} F{}", text, f);
+                                }
+
+                                // Write to new g-code file
+                                write_line(&mut optimized_file, text.as_str());
+
                                 prev_node = node;
-                            }
-                            else {
+
+                            } else {
                                 process = line.starts_with("TOUR_SECTION");
                             }
                         }
 
                         // Delete created files for this layer
-                        //if layer != 1 {
-                            fs::remove_file(parameters_path).unwrap();
-                            fs::remove_file(tsp_path).unwrap();
-                            fs::remove_file(result_path).unwrap();
-                        //}
+                        fs::remove_file(parameters_path).unwrap();
+                        fs::remove_file(tsp_path).unwrap();
+                        fs::remove_file(result_path).unwrap();
 
                         // Write lines in the buffer
                         for line in lines_to_write.iter() {
@@ -291,31 +323,39 @@ fn main() {
                     }
 
                     // Reset variables
-                    layer += 1;
-                    //initial_tour_path = format!("{}.tour", layer);
-                    parameters_path = format!("{}.par", layer);
-                    tsp_path = format!("{}.tsp", layer);
-                    result_path = format!("result_{}.tour", layer);
+                    current_layer += 1;
+
+                    //initial_tour_path = format!("{}.tour", current_layer);
+                    parameters_path = format!("{}.par", current_layer);
+                    tsp_path = format!("{}.tsp", current_layer);
+                    result_path = format!("result_{}.tour", current_layer);
+
                     num_nodes = 1;
+
                     nodes.clear();
                     nodes.push(last_position);
                     mandatories.clear();
                     feedrates.clear();
-                    current_z_layer = position.2;
+
+                    current_z = position.2;
                 }
 
-                // Add the node to the tour
+                // Add node to tour
                 nodes.push(position);
+
+                if feed_rate > 0 {
+                    feedrates.insert(num_nodes, feed_rate);
+                }
+
+                // Mark edge as mandatory
                 if extrudes {
                     let mut e = extrusion;
                     if position_mode != CoordinatesMode::Relative {
                         e -= last_extrusion;
                     }
                     mandatories.insert(num_nodes, e);
-                    feedrates.insert(num_nodes, current_feed_rate);
-                } else {
-                    feedrates.insert(num_nodes, current_travel_rate);
-                }
+                } 
+
                 num_nodes += 1;
                 
                 // Updates last position
@@ -336,7 +376,7 @@ fn main() {
             }
             Some("G28") => { // G28 X0 Y0 Z0, move to origin (Home)
                 info!("G28 command at line {}", line_number);
-                position = get_position(line_without_comment, last_position);
+                position = get_position(line_w, last_position);
                 travel_distance += calculate_distance(last_position, position, &position_mode);
                 last_position = position;
                 write_line(&mut optimized_file, line);
@@ -363,7 +403,7 @@ fn main() {
             }
             Some("G92") => { // G92 X0 Y0 Z0 E0, set current position
                 info!("G92 command at line {}", line_number);
-                last_position = get_position(line_without_comment, last_position);
+                last_position = get_position(line_w, last_position);
                 write_line(&mut optimized_file, line);
             }
 

@@ -1,14 +1,8 @@
-use core::num;
-use std::collections::HashMap;
 use std::env;
 use std::fs;
+use std::collections::HashMap;
 use std::io::Write;
-use std::iter::FlatMap;
-use std::iter::Map;
-use std::path::PathBuf;
-use chrono::format;
 use log::{info, warn};
-use num_format::WriteFormatted;
 use num_format::{Locale, ToFormattedString};
 
 #[derive(PartialEq)]
@@ -70,9 +64,11 @@ fn main() {
     let mut extrusion_distance = 0.0;
     let mut travel_distance = 0.0;
     let mut last_position = (0.0, 0.0, 0.0);
-    let mut position = (0.0, 0.0, 0.0);
+    let mut position;
     let mut current_z_layer = 0.0;
-    let mut current_feed_rate = 0.0;
+    let mut current_feed_rate = 0;
+    let mut current_travel_rate = 0;
+    let mut last_extrusion = 0.0;
 
     let mut position_mode = CoordinatesMode::NotSet;
     let mut extruder_mode = CoordinatesMode::NotSet;
@@ -80,21 +76,24 @@ fn main() {
 
     // Prepare tour files and variables
     let mut layer = 0;
-    let mut initial_tour_path = format!("{}.tour", layer);
+    //let mut initial_tour_path = format!("{}.tour", layer);
     let mut parameters_path = format!("{}.par", layer);
     let mut tsp_path = format!("{}.tsp", layer);
     let mut result_path = format!("result_{}.tour", layer);
+
     let mut num_nodes = 1;
     let mut nodes = Vec::new();
     nodes.push(last_position);
     let mut mandatories = HashMap::new();
     let mut feedrates = HashMap::new();
-    let mut lkh_distance = 0.0;
+    let mut lkh_extrusion_distance = 0.0;
+    let mut lkh_travel_distance = 0.0;
+    let mut lkh_extrusion = 0.0;
 
     let mut lines_to_write: Vec<&str> = Vec::new();
 
     const MINIMUM_NODES: i32 = 5; // minimum nodes for a layer to be considered for optimization
-    const DEFAULT_PRECISION: i32 = 100; // for decimal places, 100 for 2, 1000 for 3, etc...
+    const DEFAULT_PRECISION: i32 = 1000; // for decimal places, 100 for 2, 1000 for 3, etc...
     const NUM_RUNS: i32 = 1;
     const TIME_LIMIT: i32 = 60; //seconds
 
@@ -144,6 +143,9 @@ fn main() {
                 // Parse the line to get the position
                 position = get_position(line_without_comment, last_position);
 
+                let last_feed_rate = current_feed_rate;
+                let last_travel_rate = current_travel_rate;
+
                 // Check if extrusion is enabled
                 let mut extrudes = false;
                 let mut extrusion = 0.0;
@@ -160,6 +162,8 @@ fn main() {
 
                 // Calculate the distance between the last position and the current position
                 if !extrudes {
+                    current_travel_rate = current_feed_rate;
+                    current_feed_rate = last_feed_rate;
                     travel_distance += calculate_distance(last_position, position, &position_mode);
                 }
 
@@ -216,7 +220,6 @@ fn main() {
                         // Parse the result file
                         let result = fs::read_to_string(result_path.clone()).unwrap();
                         
-                        let mut length = 0.0;
                         let mut process = false;
                         let mut prev_node = 1;
                         for line in result.lines() {
@@ -224,40 +227,45 @@ fn main() {
                                 if line.starts_with("-1") {
                                     break;
                                 }
+
                                 let node = line.parse::<i32>().unwrap();
-                                if ((node - prev_node == 1 && mandatories.contains_key(&prev_node)) || (node - prev_node == -1 && mandatories.contains_key(&node))) {
+                                let n = nodes[node as usize - 1];
+                                if (node - prev_node == 1 && mandatories.contains_key(&prev_node)) || 
+                                    (node - prev_node == -1 && mandatories.contains_key(&node)) {
+                                    lkh_extrusion_distance += calculate_distance(nodes[prev_node as usize - 1], nodes[node as usize - 1], &position_mode);
+
+                                    let mut e = mandatories.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap();
+                                    let f = feedrates.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap_or(&last_feed_rate);
+
+                                    lkh_extrusion += e;
+                                    if extruder_mode == CoordinatesMode::Absolute {
+                                        e = &lkh_extrusion;
+                                    }
+
                                     if position_mode == CoordinatesMode::Relative {
-                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{} F{}",
-                                            nodes[node as usize - 1].0 - nodes[prev_node as usize - 1].0, 
-                                            nodes[node as usize - 1].1 - nodes[prev_node as usize - 1].1, 
-                                            nodes[node as usize - 1].2 - nodes[prev_node as usize - 1].2, 
-                                            mandatories.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap(),
-                                            feedrates.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap_or(&current_feed_rate)
+                                        let p = nodes[prev_node as usize - 1];
+                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{:.5}",
+                                            n.0 - p.0, n.1 - p.1, n.2 - p.2, e
                                         ).as_str());
                                     } else {
-                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{} F{}",
-                                            nodes[node as usize - 1].0, 
-                                            nodes[node as usize - 1].1, 
-                                            nodes[node as usize - 1].2, 
-                                            mandatories.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap(),
-                                            feedrates.get(if node - prev_node == 1 { &prev_node } else { &node }).unwrap_or(&current_feed_rate)
+                                        write_line(&mut optimized_file, format!("G1 X{} Y{} Z{} E{:.5}",
+                                            n.0, n.1, n.2, e
                                         ).as_str());
                                     }
                                 } else {
-                                    length += calculate_distance(nodes[prev_node as usize - 1], nodes[node as usize - 1], &position_mode);
+                                    lkh_travel_distance += calculate_distance(nodes[prev_node as usize - 1], nodes[node as usize - 1], &position_mode);
+
+                                    let f = feedrates.get(&node).unwrap_or(&last_travel_rate);
+
                                     if position_mode == CoordinatesMode::Relative {
-                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{} F{}",
-                                            nodes[node as usize - 1].0 - nodes[prev_node as usize - 1].0, 
-                                            nodes[node as usize - 1].1 - nodes[prev_node as usize - 1].1, 
-                                            nodes[node as usize - 1].2 - nodes[prev_node as usize - 1].2,
-                                            feedrates.get(&node).unwrap_or(&current_feed_rate)
+                                        let p = nodes[prev_node as usize - 1];
+                                        
+                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{}",
+                                            n.0 - p.0, n.1 - p.1, n.2 - p.2
                                         ).as_str());
                                     } else {
-                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{} F{}",
-                                            nodes[node as usize - 1].0,
-                                            nodes[node as usize - 1].1,
-                                            nodes[node as usize - 1].2,
-                                            feedrates.get(&node).unwrap_or(&current_feed_rate)
+                                        write_line(&mut optimized_file, format!("G0 X{} Y{} Z{}",
+                                            n.0, n.1, n.2
                                         ).as_str());
                                     }
                                 }
@@ -269,22 +277,22 @@ fn main() {
                         }
 
                         // Delete created files for this layer
-                        fs::remove_file(parameters_path).unwrap();
-                        fs::remove_file(tsp_path).unwrap();
-                        fs::remove_file(result_path).unwrap();
+                        //if layer != 1 {
+                            fs::remove_file(parameters_path).unwrap();
+                            fs::remove_file(tsp_path).unwrap();
+                            fs::remove_file(result_path).unwrap();
+                        //}
 
                         // Write lines in the buffer
                         for line in lines_to_write.iter() {
                             write_line(&mut optimized_file, line);
                         }
                         lines_to_write.clear();
-
-                        lkh_distance += length;
                     }
 
                     // Reset variables
                     layer += 1;
-                    initial_tour_path = format!("{}.tour", layer);
+                    //initial_tour_path = format!("{}.tour", layer);
                     parameters_path = format!("{}.par", layer);
                     tsp_path = format!("{}.tsp", layer);
                     result_path = format!("result_{}.tour", layer);
@@ -298,17 +306,21 @@ fn main() {
 
                 // Add the node to the tour
                 nodes.push(position);
-                feedrates.insert(num_nodes, current_feed_rate);
                 if extrudes {
-                    mandatories.insert(num_nodes, extrusion);
+                    let mut e = extrusion;
+                    if position_mode != CoordinatesMode::Relative {
+                        e -= last_extrusion;
+                    }
+                    mandatories.insert(num_nodes, e);
+                    feedrates.insert(num_nodes, current_feed_rate);
+                } else {
+                    feedrates.insert(num_nodes, current_travel_rate);
                 }
                 num_nodes += 1;
                 
-
                 // Updates last position
                 last_position = position;
-
-                //write_line(&mut optimized_file, line);
+                last_extrusion = extrusion;
             }
             Some("G4") => { // G4 P0, dwell
                 info!("G4 command at line {}", line_number);
@@ -392,6 +404,7 @@ fn main() {
             Some("M106") => { // M106, turn on fan
                 info!("M106 command at line {}", line_number);
                 lines_to_write.push(line);
+                //write_line(&mut optimized_file, line);
             }
             Some("M107") => { // M107, turn off fan
                 info!("M107 command at line {}", line_number);
@@ -468,7 +481,13 @@ fn main() {
         UnitsMode::NotSet => "units"
     });
 
-    let lkh_dist = format!("{:.3} {}", lkh_distance, match units_mode {
+    let lkh_extrusion_dist = format!("{:.5} {}", lkh_extrusion_distance, match units_mode {
+        UnitsMode::Millimeters => "mm",
+        UnitsMode::Inches => "in",
+        UnitsMode::NotSet => "units"
+    });
+
+    let lkh_travel_dist = format!("{:.3} {}", lkh_travel_distance, match units_mode {
         UnitsMode::Millimeters => "mm",
         UnitsMode::Inches => "in",
         UnitsMode::NotSet => "units"
@@ -480,7 +499,8 @@ fn main() {
     println!("Travel distance: {}", travel_dist);
     info!("Travel distance: {}", travel_dist);
 
-    println!("LKH distance: {}", lkh_dist);
+    println!("LKH extrusion distance: {}", lkh_extrusion_dist);
+    println!("LKH travel distance: {}", lkh_travel_dist);
 }
 
 // Get position from G0 and G1 commands

@@ -57,8 +57,11 @@ fn main() {
         .chain(fern::log_file(log_file_path).unwrap())
         .apply();
 
+//---------------------------------------------------------Variables Setup-----------------------------------------------------------//
+
     let optimized_file_path = format!("{}_optimized.gcode", file_path);
     let mut optimized_file = fs::File::create(&optimized_file_path).unwrap();
+    let mut result_text = String::new();
 
     // Process variables
     let mut line_number = 0;
@@ -81,7 +84,6 @@ fn main() {
     let mut tsp_path = format!("{}.tsp", current_layer);
     let mut result_path = format!("result_{}.tour", current_layer);
     
-    let mut num_nodes = 1;
     let mut nodes = Vec::new();
     let mut mandatories = HashMap::new();
     let mut feedrates = HashMap::new();
@@ -89,7 +91,7 @@ fn main() {
     const MINIMUM_NODES: i32 = 5; // minimum nodes for a current_layer to be considered for optimization
     const DEFAULT_PRECISION: i32 = 1000; // for decimal places, 100 for 2, 1000 for 3, etc...
     const NUM_RUNS: i32 = 1;
-    const TIME_LIMIT: i32 = 60; //seconds
+    //const TIME_LIMIT: i32 = 60; //seconds
 
     let lkh_program: &str;
 
@@ -101,7 +103,7 @@ fn main() {
     let mut lkh_extrusion_distance = 0.0;
     let mut lkh_travel_distance = 0.0;
 
-//---------------------------OS related section------------------------------//
+//---------------------------------------------------------OS related section---------------------------------------------------------//
 
     if env::consts::OS == "windows" {
         // Windows
@@ -115,7 +117,7 @@ fn main() {
         return;
     }
 
-//-----------------------------START OF PROGRAM------------------------------//
+//---------------------------------------------------------START OF PROGRAM-----------------------------------------------------------//
 
     nodes.push(last_position);
 
@@ -128,14 +130,13 @@ fn main() {
         
         match line_w.split_whitespace().next() {
 
-            /* G Commands */
+//---------------------------------------------------------G Commands-----------------------------------------------------------------//
 
             Some("G0") | Some("G1") => { // G0/G1 X0 Y0 Z0 E0 F0 S0, [rapid] move to position
                 let command = line_w.split_whitespace().next().unwrap();
 
                 if line_w.starts_with("G0") {
                     g0_count += 1;
-                    
                 } else {
                     g1_count += 1;
                 }
@@ -156,11 +157,15 @@ fn main() {
                 let mut feed_rate = 0;
 
                 for part in line.split_whitespace() {
-                    if !extrudes && part.starts_with('E') && !part.starts_with("E-") {
+                    if !extrudes && part.starts_with('E') {
 
-                        extrudes = true;
                         extrusion = part[1..].parse().unwrap();
-                        extrusion_distance += calculate_distance(last_position, position, &position_mode);
+                        
+                        if position_mode != CoordinatesMode::Relative {
+                            extrusion -= last_extrusion;
+                        }
+
+                        extrudes = extrusion > 0.0;
                     }
 
                     if part.starts_with('F') {
@@ -169,55 +174,25 @@ fn main() {
                 }
 
                 // Calculate the distance between the last and current position
-                if !extrudes {
+                if extrudes {
+                    extrusion_distance += calculate_distance(last_position, position, &position_mode);
+                } else {
                     travel_distance += calculate_distance(last_position, position, &position_mode);
                 }
 
                 // Process a change of layer and execute LKH
                 if position.2 != current_z && extrudes {
-                    if num_nodes > MINIMUM_NODES {
+                    if nodes.len() as i32 > MINIMUM_NODES {
 
                         // Write parameters file
-                        let parameters = format!(
-                            "PROBLEM_FILE = {}\n\
-                            TOUR_FILE = {}\n\
-                            PRECISION = {}\n\
-                            RUNS = {}\n\
-                            TIME_LIMIT = {}\n",
-                            tsp_path, result_path, DEFAULT_PRECISION, NUM_RUNS, TIME_LIMIT
-                        );
-
-                        fs::write(parameters_path.clone(), parameters).unwrap();
+                        write_parameters_file(
+                            &parameters_path, &tsp_path, &result_path, 
+                            DEFAULT_PRECISION, NUM_RUNS, true)
+                            .expect("Failed to write parameters file");
 
                         // Write TSP file
-                        let mut tsp = format!(
-                            "NAME: {}\n\
-                            COMMENT: {}\n\
-                            TYPE: TSP\n\
-                            DIMENSION: {}\n\
-                            EDGE_WEIGHT_TYPE: EUC_3D\n\
-                            NODE_COORD_SECTION\n",
-                            format_args!("Layer {}", current_layer),
-                            format_args!("Print optimization for current_layer {}", current_layer),
-                            num_nodes
-                        );
-
-                        // Write nodes
-                        let mut i = 1;
-                        for node in nodes.iter() {
-                            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", i, node.0, node.1, node.2));
-                            i += 1;
-                        }
-
-                        // Write mandatory edges
-                        tsp.push_str("FIXED_EDGES_SECTION\n");
-                        for mandatory in mandatories.iter() {
-                            tsp.push_str(&format!("{} {}\n", mandatory.0, mandatory.0 + 1));
-                        }
-                        tsp.push_str(&format!("{} {}\n", num_nodes, 1));
-                        tsp.push_str("-1\nEOF\n");
-
-                        fs::write(&tsp_path, tsp).unwrap();
+                        write_tsp_file(&tsp_path, current_layer, &nodes, &mandatories)
+                            .expect("Failed to write TSP file");
 
                         // Run LKH
                         std::process::Command::new(lkh_program)
@@ -233,12 +208,12 @@ fn main() {
 
                         for line in result.lines() {
                             if process {
-                                if line.starts_with("-1") {
-                                    break;
-                                }
 
                                 // Gather next node position
                                 let node = line.parse::<i32>().unwrap();
+                                if node == -1 {
+                                    break;
+                                }
                                 let n = nodes[node as usize - 1];
 
                                 let mut x = n.0;
@@ -267,15 +242,15 @@ fn main() {
                                     );
 
                                     // Take a change of direction into account
-                                    let mut e = mandatories.get(
+                                    let e = mandatories.get(
                                         if node - prev_node == 1 { &prev_node } 
                                         else { &node }
                                     ).unwrap();
 
                                     lkh_total_extrusion += e;
-                                    if extruder_mode == CoordinatesMode::Absolute {
+                                    /*if extruder_mode == CoordinatesMode::Absolute {
                                         e = &lkh_total_extrusion;
-                                    }
+                                    }*/
 
                                     // Add extrusion to line
                                     text = format!("G0 {} E{:.5}", text, e);
@@ -301,7 +276,7 @@ fn main() {
                                 }
 
                                 // Write to new g-code file
-                                write_line(&mut optimized_file, text.as_str());
+                                write_line(&mut result_text, text.as_str());
 
                                 prev_node = node;
 
@@ -317,7 +292,7 @@ fn main() {
 
                         // Write lines in the buffer
                         for line in lines_to_write.iter() {
-                            write_line(&mut optimized_file, line);
+                            write_line(&mut result_text, line);
                         }
                         lines_to_write.clear();
                     }
@@ -329,8 +304,6 @@ fn main() {
                     parameters_path = format!("{}.par", current_layer);
                     tsp_path = format!("{}.tsp", current_layer);
                     result_path = format!("result_{}.tour", current_layer);
-
-                    num_nodes = 1;
 
                     nodes.clear();
                     nodes.push(last_position);
@@ -344,19 +317,13 @@ fn main() {
                 nodes.push(position);
 
                 if feed_rate > 0 {
-                    feedrates.insert(num_nodes, feed_rate);
+                    feedrates.insert(nodes.len() as i32 - 1, feed_rate);
                 }
 
                 // Mark edge as mandatory
                 if extrudes {
-                    let mut e = extrusion;
-                    if position_mode != CoordinatesMode::Relative {
-                        e -= last_extrusion;
-                    }
-                    mandatories.insert(num_nodes, e);
-                } 
-
-                num_nodes += 1;
+                    mandatories.insert(nodes.len() as i32 - 1, extrusion);
+                }
                 
                 // Updates last position
                 last_position = position;
@@ -364,7 +331,7 @@ fn main() {
             }
             Some("G4") => { // G4 P0, dwell
                 info!("G4 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G21") => { // G21, set to millimeters
                 if units_mode != UnitsMode::NotSet {
@@ -372,18 +339,18 @@ fn main() {
                 }
                 units_mode = UnitsMode::Millimeters;
                 info!("G21 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G28") => { // G28 X0 Y0 Z0, move to origin (Home)
                 info!("G28 command at line {}", line_number);
                 position = get_position(line_w, last_position);
                 travel_distance += calculate_distance(last_position, position, &position_mode);
                 last_position = position;
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G29") => { // G29 S0, detailed z-probe
                 info!("G29 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G90") => { // G90, set to absolute positioning
                 if position_mode != CoordinatesMode::NotSet {
@@ -391,7 +358,7 @@ fn main() {
                 }
                 position_mode = CoordinatesMode::Absolute;
                 info!("G90 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G91") => { // G91, set to relative positioning
                 if position_mode != CoordinatesMode::NotSet {
@@ -399,23 +366,23 @@ fn main() {
                 }
                 position_mode = CoordinatesMode::Relative;
                 info!("G91 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("G92") => { // G92 X0 Y0 Z0 E0, set current position
                 info!("G92 command at line {}", line_number);
                 last_position = get_position(line_w, last_position);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
 
-            /* M Commands */
+//---------------------------------------------------------M Commands----------------------------------------------------------------//
 
             Some("M17") => { // M17, enable motors
                 info!("M17 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M73") => { // M73 P0, set/get build percentage
                 info!("M73 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M82") => { // M82, set extruder to absolute mode
                 if extruder_mode != CoordinatesMode::NotSet {
@@ -423,7 +390,7 @@ fn main() {
                 }
                 extruder_mode = CoordinatesMode::Absolute;
                 info!("M82 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, "M83"); // Switch to relative mode for result file
             }
             Some("M83") => { // M83, set extruder to relative mode
                 if extruder_mode != CoordinatesMode::NotSet {
@@ -431,15 +398,15 @@ fn main() {
                 }
                 extruder_mode = CoordinatesMode::Relative;
                 info!("M83 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M84") => { // M84, disable motors
                 info!("M84 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M104") => { // M104 S0, set extruder temperature
                 info!("M104 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M106") => { // M106, turn on fan
                 info!("M106 command at line {}", line_number);
@@ -448,23 +415,23 @@ fn main() {
             }
             Some("M107") => { // M107, turn off fan
                 info!("M107 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M140") => { // M140 S0, set bed temperature
                 info!("M140 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M190") => { // M190 S0, wait for bed temperature to reach target
                 info!("M190 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M201") => { // M201 X0 Y0 Z0 E0, set max acceleration
                 info!("M201 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M204") => { // M204 P0, set default acceleration
                 info!("M204 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
             Some("M74") | 
             Some("M109") | Some("M115") | Some("M142") | Some("M203") |
@@ -473,17 +440,17 @@ fn main() {
             Some("M862.3") | Some("M862.5") | Some("M862.6") | Some("M900") => { 
                 let command = line.split_whitespace().next().unwrap();
                 info!("{} command at line {}, applied default ignore behavior", command, line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
 
-            /* Other Commands */
+//---------------------------------------------------------Other Commands------------------------------------------------------------//
 
             Some("T0") => { // T0, select tool 0
                 info!("T0 command at line {}", line_number);
-                write_line(&mut optimized_file, line);
+                write_line(&mut result_text, line);
             }
 
-            /* Unknown Commands */
+//---------------------------------------------------------Unknown Commands----------------------------------------------------------//
 
             Some(command) => {
                 // Ignore comments
@@ -502,6 +469,9 @@ fn main() {
         }
     }
 
+    write_file(&mut optimized_file, &result_text);
+
+//---------------------------------------------------------Statistics----------------------------------------------------------------//
     // Print statistics and log them
     println!("G0 commands: {}", g0_count.to_formatted_string(&Locale::en));
     info!("G0 commands: {}", g0_count.to_formatted_string(&Locale::en));
@@ -509,29 +479,13 @@ fn main() {
     println!("G1 commands: {}", g1_count.to_formatted_string(&Locale::en));
     info!("G1 commands: {}", g1_count.to_formatted_string(&Locale::en));
 
-    let extrusion_dist = format!("{:.5} {}", extrusion_distance, match units_mode {
-        UnitsMode::Millimeters => "mm",
-        UnitsMode::Inches => "in",
-        UnitsMode::NotSet => "units"
-    });
+    let extrusion_dist = format!("{:.5} {}", extrusion_distance, get_units_text(&units_mode));
 
-    let travel_dist = format!("{:.3} {}", travel_distance, match units_mode {
-        UnitsMode::Millimeters => "mm",
-        UnitsMode::Inches => "in",
-        UnitsMode::NotSet => "units"
-    });
+    let travel_dist = format!("{:.3} {}", travel_distance, get_units_text(&units_mode));
 
-    let lkh_extrusion_dist = format!("{:.5} {}", lkh_extrusion_distance, match units_mode {
-        UnitsMode::Millimeters => "mm",
-        UnitsMode::Inches => "in",
-        UnitsMode::NotSet => "units"
-    });
+    let lkh_extrusion_dist = format!("{:.5} {}", lkh_extrusion_distance, get_units_text(&units_mode));
 
-    let lkh_travel_dist = format!("{:.3} {}", lkh_travel_distance, match units_mode {
-        UnitsMode::Millimeters => "mm",
-        UnitsMode::Inches => "in",
-        UnitsMode::NotSet => "units"
-    });
+    let lkh_travel_dist = format!("{:.3} {}", lkh_travel_distance, get_units_text(&units_mode));
 
     println!("Extrusion distance: {}", extrusion_dist);
     info!("Extrusion distance: {}", extrusion_dist);
@@ -543,16 +497,18 @@ fn main() {
     println!("LKH travel distance: {}", lkh_travel_dist);
 }
 
+//---------------------------------------------------------Utility functions---------------------------------------------------------//
+
 // Get position from G0 and G1 commands
 fn get_position(line: &str, current_pos: (f64, f64, f64)) -> (f64, f64, f64) {
     let mut position = current_pos;
     for part in line.split_whitespace() {
-        if part.starts_with("X") {
-            position.0 = part[1..].parse().unwrap();
-        } else if part.starts_with("Y") {
-            position.1 = part[1..].parse().unwrap();
-        } else if part.starts_with("Z") {
-            position.2 = part[1..].parse().unwrap();
+        if part.starts_with('X') {
+            position.0 = part.strip_prefix('X').unwrap().parse().unwrap();
+        } else if part.starts_with('Y') {
+            position.1 = part.strip_prefix('Y').unwrap().parse().unwrap();
+        } else if part.starts_with('Z') {
+            position.2 = part.strip_prefix('Z').unwrap().parse().unwrap();
         }
     }
     position
@@ -570,8 +526,72 @@ fn calculate_distance(origin: (f64, f64, f64), dest: (f64, f64, f64), mode: &Coo
         .sqrt()
 }
 
-// Write a line to a file and add a new line
-fn write_line(file: &mut fs::File, line: &str) {
-    file.write_all(line.as_bytes()).unwrap();
-    file.write_all(b"\n").unwrap();
+// Write a line to a string and add a new line
+fn write_line(text: &mut String, line: &str) {
+    text.push_str(line);
+    text.push('\n');
+}
+
+// Write string to a file
+fn write_file(file: &mut fs::File, text: &str) {
+    file.write_all(text.as_bytes()).unwrap();
+}
+
+// Write parameters file for LKH
+fn write_parameters_file(
+    file_path: &str, tsp_path: &str, result_path: &str, 
+    precision: i32, num_runs: i32, popmusic: bool) 
+    -> std::io::Result<()> {
+
+    let parameters = format!(
+        "PROBLEM_FILE = {}\n\
+        TOUR_FILE = {}\n\
+        PRECISION = {}\n\
+        RUNS = {}\n\
+        POPMUSIC_INITIAL_TOUR = {}\n",
+        tsp_path, result_path, precision, num_runs, if popmusic { "YES" } else { "NO" }
+    );
+
+    fs::write(file_path, parameters)
+}
+
+// Write TSP file for LKH
+fn write_tsp_file(file_path: &str, layer: i32, nodes: &Vec<(f64, f64, f64)>, mandatory_nodes: &HashMap<i32, f64>) -> std::io::Result<()> {
+    let mut tsp = format!(
+        "NAME: {}\n\
+        COMMENT: {}\n\
+        TYPE: TSP\n\
+        DIMENSION: {}\n\
+        EDGE_WEIGHT_TYPE: EUC_3D\n\
+        NODE_COORD_SECTION\n",
+        format_args!("Layer {}", layer),
+        format_args!("Print optimization for current_layer {}", layer),
+        nodes.len()
+    );
+
+    // Write nodes
+    let mut i = 1;
+    for node in nodes.iter() {
+        tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", i, node.0, node.1, node.2));
+        i += 1;
+    }
+
+    // Write mandatory edges
+    tsp.push_str("FIXED_EDGES_SECTION\n");
+    for mandatory in mandatory_nodes.iter() {
+        tsp.push_str(&format!("{} {}\n", mandatory.0, mandatory.0 + 1));
+    }
+    tsp.push_str(&format!("{} {}\n", nodes.len(), 1));
+    tsp.push_str("-1\nEOF\n");
+
+    fs::write(file_path, tsp)
+}
+
+// Units to text
+fn get_units_text(mode: &UnitsMode) -> &str {
+    match mode {
+        UnitsMode::Millimeters => "mm",
+        UnitsMode::Inches => "in",
+        UnitsMode::NotSet => "units"
+    }
 }

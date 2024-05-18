@@ -19,6 +19,38 @@ enum UnitsMode {
     NotSet
 }
 
+const MINIMUM_NODES: i32 = 5; // minimum nodes for a current_layer to be considered for optimization
+const DEFAULT_PRECISION: i32 = 1000; // for decimal places, 100 for 2, 1000 for 3, etc...
+const NUM_RUNS: i32 = 1;
+//const TIME_LIMIT: i32 = 60; //seconds
+
+struct GlobalVariables {
+    optimized_file: fs::File,
+    optimized_text: String,
+
+    line_number: i32,
+    last_position: (f64, f64, f64),
+    current_position: (f64, f64, f64),
+    current_layer: i32,
+    current_z: f64,
+    last_extrusion_quantity: f64,
+
+    position_mode: CoordinatesMode,
+    extruder_mode: CoordinatesMode,
+    units_mode: UnitsMode,
+
+    nodes: Vec<(f64, f64, f64)>,
+    mandatory_nodes: HashMap<i32, f64>,
+    feedrates: HashMap<i32, i32>,
+
+    g0_count: i32,
+    g1_count: i32,
+    extrusion_distance: f64,
+    travel_distance: f64,
+    lkh_extrusion_distance: f64,
+    lkh_travel_distance: f64
+}
+
 fn main() {
     // Get the file path from command line arguments
     let args: Vec<String> = env::args().collect();
@@ -59,49 +91,40 @@ fn main() {
 
 //---------------------------------------------------------Variables Setup-----------------------------------------------------------//
 
-    let optimized_file_path = format!("{}_optimized.gcode", file_path);
-    let mut optimized_file = fs::File::create(&optimized_file_path).unwrap();
-    let mut result_text = String::new();
+    let mut gv = GlobalVariables {
+        // File variables
+        optimized_file: fs::File::create(format!("{}_optimized.gcode", file_path)).unwrap(),
+        optimized_text: String::new(),
 
-    // Process variables
-    let mut line_number = 0;
-    let mut last_position = (0.0, 0.0, 0.0);
-    let mut position;
-    let mut current_layer = 0;
-    let mut current_z = 0.0;
-    let mut last_extrusion = 0.0;
-    let mut lkh_total_extrusion = 0.0;
+        // G-code variables
+        line_number: 0,
+        last_position: (0.0, 0.0, 0.0),
+        current_position: (0.0, 0.0, 0.0),
+        current_layer: 0,
+        current_z: 0.0,
+        last_extrusion_quantity: 0.0,
+
+        // Mode variables
+        position_mode: CoordinatesMode::NotSet,
+        extruder_mode: CoordinatesMode::NotSet,
+        units_mode: UnitsMode::NotSet,
+
+        // LKH variables
+        nodes: Vec::new(),
+        mandatory_nodes: HashMap::new(),
+        feedrates: HashMap::new(),
+
+        // Statistics variables
+        g0_count: 0,
+        g1_count: 0,
+        extrusion_distance: 0.0,
+        travel_distance: 0.0,
+        lkh_extrusion_distance: 0.0,
+        lkh_travel_distance: 0.0
+    };
 
     let mut lines_to_write: Vec<&str> = Vec::new();
-    
-    let mut position_mode = CoordinatesMode::NotSet;
-    let mut extruder_mode = CoordinatesMode::NotSet;
-    let mut units_mode = UnitsMode::NotSet;
-
-    // LKH variables
-    //let mut initial_tour_path = format!("{}.tour", current_layer);
-    let mut parameters_path = format!("{}.par", current_layer);
-    let mut tsp_path = format!("{}.tsp", current_layer);
-    let mut result_path = format!("result_{}.tour", current_layer);
-    
-    let mut nodes = Vec::new();
-    let mut mandatories = HashMap::new();
-    let mut feedrates = HashMap::new();
-
-    const MINIMUM_NODES: i32 = 5; // minimum nodes for a current_layer to be considered for optimization
-    const DEFAULT_PRECISION: i32 = 1000; // for decimal places, 100 for 2, 1000 for 3, etc...
-    const NUM_RUNS: i32 = 1;
-    //const TIME_LIMIT: i32 = 60; //seconds
-
     let lkh_program: &str;
-
-    // Statistics variables
-    let mut g0_count = 0;
-    let mut g1_count = 0;
-    let mut extrusion_distance = 0.0;
-    let mut travel_distance = 0.0;
-    let mut lkh_extrusion_distance = 0.0;
-    let mut lkh_travel_distance = 0.0;
 
 //---------------------------------------------------------OS related section---------------------------------------------------------//
 
@@ -119,11 +142,11 @@ fn main() {
 
 //---------------------------------------------------------START OF PROGRAM-----------------------------------------------------------//
 
-    nodes.push(last_position);
+    gv.nodes.push(gv.last_position);
 
     // Parse the g-code file line by line
     for line in contents.lines() {
-        line_number += 1;
+        gv.line_number += 1;
 
         // Remove comment from line
         let line_w = line.split(';').next().unwrap();
@@ -136,20 +159,20 @@ fn main() {
                 let command = line_w.split_whitespace().next().unwrap();
 
                 if line_w.starts_with("G0") {
-                    g0_count += 1;
+                    gv.g0_count += 1;
                 } else {
-                    g1_count += 1;
+                    gv.g1_count += 1;
                 }
 
-                if position_mode == CoordinatesMode::NotSet {
-                    warn!("{} command at line {} before positioning mode was set", command, line_number)
+                if gv.position_mode == CoordinatesMode::NotSet {
+                    warn!("{} command at line {} before positioning mode was set", command, gv.line_number)
                 }
-                if units_mode == UnitsMode::NotSet {
-                    warn!("{} command at line {} before units mode was set", command, line_number)
+                if gv.units_mode == UnitsMode::NotSet {
+                    warn!("{} command at line {} before units mode was set", command, gv.line_number)
                 }
 
                 // Parse the line to get the position
-                position = get_position(line_w, last_position);
+                gv.current_position = get_position(line_w, gv.last_position);
                 
                 // Check if extrusion is enabled and process feed rate
                 let mut extrudes = false;
@@ -161,8 +184,8 @@ fn main() {
 
                         extrusion = part[1..].parse().unwrap();
                         
-                        if position_mode != CoordinatesMode::Relative {
-                            extrusion -= last_extrusion;
+                        if gv.position_mode != CoordinatesMode::Relative {
+                            extrusion -= gv.last_extrusion_quantity;
                         }
 
                         extrudes = extrusion > 0.0;
@@ -175,263 +198,136 @@ fn main() {
 
                 // Calculate the distance between the last and current position
                 if extrudes {
-                    extrusion_distance += calculate_distance(last_position, position, &position_mode);
+                    gv.extrusion_distance += calculate_distance(gv.last_position, gv.current_position, &gv.position_mode);
                 } else {
-                    travel_distance += calculate_distance(last_position, position, &position_mode);
+                    gv.travel_distance += calculate_distance(gv.last_position, gv.current_position, &gv.position_mode);
                 }
 
                 // Process a change of layer and execute LKH
-                if position.2 != current_z && extrudes {
-                    if nodes.len() as i32 > MINIMUM_NODES {
-
-                        // Write parameters file
-                        write_parameters_file(
-                            &parameters_path, &tsp_path, &result_path, 
-                            DEFAULT_PRECISION, NUM_RUNS, true)
-                            .expect("Failed to write parameters file");
-
-                        // Write TSP file
-                        write_tsp_file(&tsp_path, current_layer, &nodes, &mandatories)
-                            .expect("Failed to write TSP file");
-
-                        // Run LKH
-                        std::process::Command::new(lkh_program)
-                            .arg(parameters_path.clone())
-                            .output()
-                            .expect("Failed to run LKH");
-
-                        // Parse the result file
-                        let result = fs::read_to_string(result_path.clone()).unwrap();
-                        
-                        let mut process = false;
-                        let mut prev_node = 1;
-
-                        for line in result.lines() {
-                            if process {
-
-                                // Gather next node position
-                                let node = line.parse::<i32>().unwrap();
-                                if node == -1 {
-                                    break;
-                                }
-                                let n = nodes[node as usize - 1];
-
-                                let mut x = n.0;
-                                let mut y = n.1;
-                                let mut z = n.2;
-
-                                if position_mode == CoordinatesMode::Relative {
-                                    let p = nodes[prev_node as usize - 1];
-
-                                    x -= p.0;
-                                    y -= p.1;
-                                    z -= p.2;
-                                }
-
-                                // Prepare new g-code line
-                                let mut text = format!("X{} Y{} Z{}",
-                                    x, y, z
-                                );
-
-                                if (node - prev_node == 1 && mandatories.contains_key(&prev_node)) || 
-                                    (node - prev_node == -1 && mandatories.contains_key(&node)) {
-                                    lkh_extrusion_distance += calculate_distance(
-                                        nodes[prev_node as usize - 1], 
-                                        nodes[node as usize - 1], 
-                                        &position_mode
-                                    );
-
-                                    // Take a change of direction into account
-                                    let e = mandatories.get(
-                                        if node - prev_node == 1 { &prev_node } 
-                                        else { &node }
-                                    ).unwrap();
-
-                                    lkh_total_extrusion += e;
-                                    /*if extruder_mode == CoordinatesMode::Absolute {
-                                        e = &lkh_total_extrusion;
-                                    }*/
-
-                                    // Add extrusion to line
-                                    text = format!("G0 {} E{:.5}", text, e);
-
-                                } else {
-                                    lkh_travel_distance += calculate_distance(
-                                        nodes[prev_node as usize - 1], 
-                                        nodes[node as usize - 1], 
-                                        &position_mode
-                                    );
-
-                                    text = format!("G1 {}", text);
-                                }
-
-                                // Add feedrate if needed
-                                let f = feedrates.get(
-                                    if node - prev_node == 1 { &prev_node } 
-                                    else { &node }
-                                ).unwrap_or(&0);
-
-                                if f > &0 {
-                                    text = format!("{} F{}", text, f);
-                                }
-
-                                // Write to new g-code file
-                                write_line(&mut result_text, text.as_str());
-
-                                prev_node = node;
-
-                            } else {
-                                process = line.starts_with("TOUR_SECTION");
-                            }
-                        }
-
-                        // Delete created files for this layer
-                        fs::remove_file(parameters_path).unwrap();
-                        fs::remove_file(tsp_path).unwrap();
-                        fs::remove_file(result_path).unwrap();
-
-                        // Write lines in the buffer
-                        for line in lines_to_write.iter() {
-                            write_line(&mut result_text, line);
-                        }
-                        lines_to_write.clear();
-                    }
-
-                    // Reset variables
-                    current_layer += 1;
-
-                    //initial_tour_path = format!("{}.tour", current_layer);
-                    parameters_path = format!("{}.par", current_layer);
-                    tsp_path = format!("{}.tsp", current_layer);
-                    result_path = format!("result_{}.tour", current_layer);
-
-                    nodes.clear();
-                    nodes.push(last_position);
-                    mandatories.clear();
-                    feedrates.clear();
-
-                    current_z = position.2;
+                if gv.current_position.2 != gv.current_z && extrudes {
+                    compute_layer(&mut gv, &mut lines_to_write, lkh_program);
                 }
 
                 // Add node to tour
-                nodes.push(position);
+                gv.nodes.push(gv.current_position);
 
                 if feed_rate > 0 {
-                    feedrates.insert(nodes.len() as i32 - 1, feed_rate);
+                    gv.feedrates.insert(gv.nodes.len() as i32 - 1, feed_rate);
                 }
 
                 // Mark edge as mandatory
                 if extrudes {
-                    mandatories.insert(nodes.len() as i32 - 1, extrusion);
+                    gv.mandatory_nodes.insert(gv.nodes.len() as i32 - 1, extrusion);
                 }
                 
                 // Updates last position
-                last_position = position;
-                last_extrusion = extrusion;
+                gv.last_position = gv.current_position;
+                gv.last_extrusion_quantity = extrusion;
             }
             Some("G4") => { // G4 P0, dwell
-                info!("G4 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("G4 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G21") => { // G21, set to millimeters
-                if units_mode != UnitsMode::NotSet {
-                    warn!("G21 command at line {} after units mode was already set", line_number)
+                if gv.units_mode != UnitsMode::NotSet {
+                    warn!("G21 command at line {} after units mode was already set", gv.line_number)
                 }
-                units_mode = UnitsMode::Millimeters;
-                info!("G21 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                gv.units_mode = UnitsMode::Millimeters;
+                info!("G21 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G28") => { // G28 X0 Y0 Z0, move to origin (Home)
-                info!("G28 command at line {}", line_number);
-                position = get_position(line_w, last_position);
-                travel_distance += calculate_distance(last_position, position, &position_mode);
-                last_position = position;
-                write_line(&mut result_text, line);
+                info!("G28 command at line {}", gv.line_number);
+                gv.current_position = get_position(line_w, gv.last_position);
+                gv.travel_distance += calculate_distance(gv.last_position, gv.current_position, &gv.position_mode);
+                gv.last_position = gv.current_position;
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G29") => { // G29 S0, detailed z-probe
-                info!("G29 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("G29 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G90") => { // G90, set to absolute positioning
-                if position_mode != CoordinatesMode::NotSet {
-                    warn!("G90 command at line {} after positioning mode was already set", line_number)
+                if gv.position_mode != CoordinatesMode::NotSet {
+                    warn!("G90 command at line {} after positioning mode was already set", gv.line_number)
                 }
-                position_mode = CoordinatesMode::Absolute;
-                info!("G90 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                gv.position_mode = CoordinatesMode::Absolute;
+                info!("G90 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G91") => { // G91, set to relative positioning
-                if position_mode != CoordinatesMode::NotSet {
-                    warn!("G91 command at line {} after positioning mode was already set", line_number)
+                if gv.position_mode != CoordinatesMode::NotSet {
+                    warn!("G91 command at line {} after positioning mode was already set", gv.line_number)
                 }
-                position_mode = CoordinatesMode::Relative;
-                info!("G91 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                gv.position_mode = CoordinatesMode::Relative;
+                info!("G91 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("G92") => { // G92 X0 Y0 Z0 E0, set current position
-                info!("G92 command at line {}", line_number);
-                last_position = get_position(line_w, last_position);
-                write_line(&mut result_text, line);
+                info!("G92 command at line {}", gv.line_number);
+                gv.last_position = get_position(line_w, gv.last_position);
+                write_line(&mut gv.optimized_text, line);
             }
 
 //---------------------------------------------------------M Commands----------------------------------------------------------------//
 
             Some("M17") => { // M17, enable motors
-                info!("M17 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M17 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M73") => { // M73 P0, set/get build percentage
-                info!("M73 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M73 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M82") => { // M82, set extruder to absolute mode
-                if extruder_mode != CoordinatesMode::NotSet {
-                    warn!("M82 command at line {} after extruder mode was already set", line_number);
+                if gv.extruder_mode != CoordinatesMode::NotSet {
+                    warn!("M82 command at line {} after extruder mode was already set", gv.line_number);
                 }
-                extruder_mode = CoordinatesMode::Absolute;
-                info!("M82 command at line {}", line_number);
-                write_line(&mut result_text, "M83"); // Switch to relative mode for result file
+                gv.extruder_mode = CoordinatesMode::Absolute;
+                info!("M82 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, "M83"); // Switch to relative mode for result file
             }
             Some("M83") => { // M83, set extruder to relative mode
-                if extruder_mode != CoordinatesMode::NotSet {
-                    warn!("M83 command at line {} after extruder mode was already set", line_number);
+                if gv.extruder_mode != CoordinatesMode::NotSet {
+                    warn!("M83 command at line {} after extruder mode was already set", gv.line_number);
                 }
-                extruder_mode = CoordinatesMode::Relative;
-                info!("M83 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                gv.extruder_mode = CoordinatesMode::Relative;
+                info!("M83 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M84") => { // M84, disable motors
-                info!("M84 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M84 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M104") => { // M104 S0, set extruder temperature
-                info!("M104 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M104 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M106") => { // M106, turn on fan
-                info!("M106 command at line {}", line_number);
+                info!("M106 command at line {}", gv.line_number);
                 lines_to_write.push(line);
                 //write_line(&mut optimized_file, line);
             }
             Some("M107") => { // M107, turn off fan
-                info!("M107 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M107 command at line {}", gv.line_number);
+                compute_layer(&mut gv, &mut lines_to_write, lkh_program);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M140") => { // M140 S0, set bed temperature
-                info!("M140 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M140 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M190") => { // M190 S0, wait for bed temperature to reach target
-                info!("M190 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M190 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M201") => { // M201 X0 Y0 Z0 E0, set max acceleration
-                info!("M201 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M201 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M204") => { // M204 P0, set default acceleration
-                info!("M204 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("M204 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
             Some("M74") | 
             Some("M109") | Some("M115") | Some("M142") | Some("M203") |
@@ -439,15 +335,15 @@ fn main() {
             Some("M572") | Some("M593") | Some("M569") | Some("M862.1") | 
             Some("M862.3") | Some("M862.5") | Some("M862.6") | Some("M900") => { 
                 let command = line.split_whitespace().next().unwrap();
-                info!("{} command at line {}, applied default ignore behavior", command, line_number);
-                write_line(&mut result_text, line);
+                info!("{} command at line {}, applied default ignore behavior", command, gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
 
 //---------------------------------------------------------Other Commands------------------------------------------------------------//
 
             Some("T0") => { // T0, select tool 0
-                info!("T0 command at line {}", line_number);
-                write_line(&mut result_text, line);
+                info!("T0 command at line {}", gv.line_number);
+                write_line(&mut gv.optimized_text, line);
             }
 
 //---------------------------------------------------------Unknown Commands----------------------------------------------------------//
@@ -457,7 +353,7 @@ fn main() {
                 if !command.starts_with(";") {
                     // Log unknown commands
                     println!("Unknown command: {}", command);
-                    warn!("Unknown command at line {}: {}", line_number, command);
+                    warn!("Unknown command at line {}: {}", gv.line_number, command);
                 }
             }
 
@@ -469,23 +365,23 @@ fn main() {
         }
     }
 
-    write_file(&mut optimized_file, &result_text);
+    write_file(&mut gv.optimized_file, &gv.optimized_text);
 
 //---------------------------------------------------------Statistics----------------------------------------------------------------//
     // Print statistics and log them
-    println!("G0 commands: {}", g0_count.to_formatted_string(&Locale::en));
-    info!("G0 commands: {}", g0_count.to_formatted_string(&Locale::en));
+    println!("G0 commands: {}", gv.g0_count.to_formatted_string(&Locale::en));
+    info!("G0 commands: {}",gv. g0_count.to_formatted_string(&Locale::en));
         
-    println!("G1 commands: {}", g1_count.to_formatted_string(&Locale::en));
-    info!("G1 commands: {}", g1_count.to_formatted_string(&Locale::en));
+    println!("G1 commands: {}", gv.g1_count.to_formatted_string(&Locale::en));
+    info!("G1 commands: {}", gv.g1_count.to_formatted_string(&Locale::en));
 
-    let extrusion_dist = format!("{:.5} {}", extrusion_distance, get_units_text(&units_mode));
+    let extrusion_dist = format!("{:.5} {}", gv.extrusion_distance, get_units_text(&gv.units_mode));
 
-    let travel_dist = format!("{:.3} {}", travel_distance, get_units_text(&units_mode));
+    let travel_dist = format!("{:.3} {}", gv.travel_distance, get_units_text(&gv.units_mode));
 
-    let lkh_extrusion_dist = format!("{:.5} {}", lkh_extrusion_distance, get_units_text(&units_mode));
+    let lkh_extrusion_dist = format!("{:.5} {}", gv.lkh_extrusion_distance, get_units_text(&gv.units_mode));
 
-    let lkh_travel_dist = format!("{:.3} {}", lkh_travel_distance, get_units_text(&units_mode));
+    let lkh_travel_dist = format!("{:.3} {}", gv.lkh_travel_distance, get_units_text(&gv.units_mode));
 
     println!("Extrusion distance: {}", extrusion_dist);
     info!("Extrusion distance: {}", extrusion_dist);
@@ -594,4 +490,142 @@ fn get_units_text(mode: &UnitsMode) -> &str {
         UnitsMode::Inches => "in",
         UnitsMode::NotSet => "units"
     }
+}
+
+// Compute layer with LKH
+fn compute_layer(
+    gv: &mut GlobalVariables, lines_to_write: &mut Vec<&str>, lkh_program: &str
+) {
+    if gv.nodes.len() as i32 > MINIMUM_NODES {
+
+        //let mut initial_tour_path = format!("{}.tour", current_layer);
+        let parameters_path = format!("{}.par", gv.current_layer);
+        let tsp_path = format!("{}.tsp", gv.current_layer);
+        let result_path = format!("result_{}.tour", gv.current_layer);
+
+        // Write parameters file
+        write_parameters_file(
+            &parameters_path, &tsp_path, &result_path, 
+            DEFAULT_PRECISION, NUM_RUNS, true)
+            .expect("Failed to write parameters file");
+
+        // Write TSP file
+        write_tsp_file(
+            &tsp_path, gv.current_layer, 
+            &gv.nodes, 
+            &gv.mandatory_nodes
+        ).expect("Failed to write TSP file");
+
+        // Run LKH
+        std::process::Command::new(lkh_program)
+            .arg(parameters_path.clone())
+            .output()
+            .expect("Failed to run LKH");
+
+        // Parse the result file
+        let result = fs::read_to_string(result_path.clone()).unwrap();
+        
+        let mut process = false;
+        let mut prev_node = 1;
+
+        for line in result.lines() {
+            if process {
+
+                // Gather next node position
+                let node = line.parse::<i32>().unwrap();
+                if node == -1 {
+                    break;
+                }
+                let n = gv.nodes[node as usize - 1];
+
+                let mut x = n.0;
+                let mut y = n.1;
+                let mut z = n.2;
+
+                if gv.position_mode == CoordinatesMode::Relative {
+                    let p = gv.nodes[prev_node as usize - 1];
+
+                    x -= p.0;
+                    y -= p.1;
+                    z -= p.2;
+                }
+
+                // Prepare new g-code line
+                let mut text = format!("X{} Y{} Z{}",
+                    x, y, z
+                );
+
+                if (node - prev_node == 1 && gv.mandatory_nodes.contains_key(&prev_node)) || 
+                    (node - prev_node == -1 && gv.mandatory_nodes.contains_key(&node)) {
+                        gv.lkh_extrusion_distance += calculate_distance(
+                            gv.nodes[prev_node as usize - 1], 
+                            gv.nodes[node as usize - 1], 
+                        &gv.position_mode
+                    );
+
+                    // Take a change of direction into account
+                    let e = gv.mandatory_nodes.get(
+                        if node - prev_node == 1 { &prev_node } 
+                        else { &node }
+                    ).unwrap();
+
+                    /*gv.lkh_total_extrusion += e;
+                    if extruder_mode == CoordinatesMode::Absolute {
+                        e = &lkh_total_extrusion;
+                    }*/
+
+                    // Add extrusion to line
+                    text = format!("G0 {} E{:.5}", text, e);
+
+                } else {
+                    gv.lkh_travel_distance += calculate_distance(
+                        gv.nodes[prev_node as usize - 1], 
+                        gv.nodes[node as usize - 1], 
+                        &gv.position_mode
+                    );
+
+                    text = format!("G1 {}", text);
+                }
+
+                // Add feedrate if needed
+                let f = gv.feedrates.get(
+                    if node - prev_node == 1 { &prev_node } 
+                    else { &node }
+                ).unwrap_or(&0);
+
+                if f > &0 {
+                    text = format!("{} F{}", text, f);
+                }
+
+                // Write to new g-code file
+                write_line(&mut gv.optimized_text, text.as_str());
+
+                prev_node = node;
+
+            } else {
+                process = line.starts_with("TOUR_SECTION");
+            }
+        }
+
+        // Delete created files for this layer
+        fs::remove_file(parameters_path).unwrap();
+        fs::remove_file(tsp_path).unwrap();
+        fs::remove_file(result_path).unwrap();
+
+        // Write lines in the buffer
+        for line in lines_to_write.iter() {
+            write_line(&mut gv.optimized_text, line);
+        }
+        lines_to_write.clear();
+    }
+
+    // Reset variables
+    gv.current_layer += 1;
+
+    gv.nodes.clear();
+    gv.nodes.push(gv.last_position);
+    gv.mandatory_nodes.clear();
+    gv.feedrates.clear();
+
+    gv.current_z = gv.current_position.2;
 }

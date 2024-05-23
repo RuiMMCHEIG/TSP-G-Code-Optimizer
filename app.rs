@@ -156,7 +156,7 @@ fn main() {
 //---------------------------------------------------------G Commands-----------------------------------------------------------------//
 
             Some("G0") | Some("G1") => { // G0/G1 X0 Y0 Z0 E0 F0 S0, [rapid] move to position
-                let command = line_w.split_whitespace().next().unwrap();
+                let _command = line_w.split_whitespace().next().unwrap();
 
                 if line_w.starts_with("G0") {
                     gv.g0_count += 1;
@@ -164,12 +164,12 @@ fn main() {
                     gv.g1_count += 1;
                 }
 
-                if gv.position_mode == CoordinatesMode::NotSet {
+                /*if gv.position_mode == CoordinatesMode::NotSet {
                     warn!("{} command at line {} before positioning mode was set", command, gv.line_number)
                 }
                 if gv.units_mode == UnitsMode::NotSet {
                     warn!("{} command at line {} before units mode was set", command, gv.line_number)
-                }
+                }*/
 
                 // Parse the line to get the position
                 gv.current_position = get_position(line_w, gv.last_position);
@@ -182,7 +182,7 @@ fn main() {
                 for part in line.split_whitespace() {
                     if !extrudes && part.starts_with('E') {
 
-                        extrusion = part[1..].parse().unwrap();
+                        extrusion = part.strip_prefix('E').unwrap().parse().unwrap();
                         
                         if gv.position_mode != CoordinatesMode::Relative {
                             extrusion -= gv.last_extrusion_quantity;

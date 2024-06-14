@@ -117,7 +117,7 @@ impl GCode {
                     }
 
                     // Process stats
-                    let distance = if gcode.position_mode == CoordinatesMode::Relative {
+                    let distance = if gcode.position_mode != CoordinatesMode::Relative {
                         distance_3d(current_position, last_position)
                     } else {
                         distance_to_origin(current_position)
@@ -125,10 +125,10 @@ impl GCode {
 
                     if extrudes {
                         gcode.extrude_count += 1;
-                        gcode.stats.extrusion_distance += distance;
+                        gcode.stats.increment_extrusion(distance);
                     } else {
                         gcode.travel_count += 1;
-                        gcode.stats.travel_distance += distance;
+                        gcode.stats.increment_travel(distance);
                     }
 
                     // Process a change of layer
@@ -161,6 +161,7 @@ impl GCode {
                     if gcode.position_mode != CoordinatesMode::Relative {
                         last_position = current_position;
                     }
+
                     if gcode.extruder_mode != CoordinatesMode::Relative {
                         last_extrusion += extrusion;
                     } else {
@@ -184,7 +185,7 @@ impl GCode {
                 // Home all axes
                 Some("G28") => {
                     current_position = get_position(line, (0.0, 0.0, 0.0));
-                    gcode.stats.travel_distance += distance_3d(current_position, last_position);
+                    gcode.stats.increment_travel(distance_3d(current_position, last_position));
                     last_position = current_position;
 
                     gcode.layers[current_layer as usize].nodes.push(current_position);
@@ -279,5 +280,25 @@ impl GCode {
     pub fn write(&self) {
         std::fs::write(&self.file_path, &self.contents)
             .unwrap_or_else(|_| panic!("Unable to write to file {}", self.file_path));
+    }
+}
+
+impl GCodeStats {
+    pub fn display(&self) {
+        let units = match self.units_mode {
+            UnitsMode::Millimeters => "mm",
+            UnitsMode::Inches => "in",
+            UnitsMode::NotSet => "units",
+        };
+        println!("Extrusion distance: {:.2} {}", self.extrusion_distance, units);
+        println!("Travel distance: {:.2} {}", self.travel_distance, units);
+    }
+
+    pub fn increment_extrusion(&mut self, distance: f64) {
+        self.extrusion_distance += distance;
+    }
+
+    pub fn increment_travel(&mut self, distance: f64) {
+        self.travel_distance += distance;
     }
 }

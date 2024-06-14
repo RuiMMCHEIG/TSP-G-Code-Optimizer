@@ -5,6 +5,8 @@ mod quick_math;
 use std::{env, fs};
 use std::path::Path;
 
+use quick_math::distance_3d;
+
 struct Optimizer {
     config: config::Config,
 
@@ -12,7 +14,6 @@ struct Optimizer {
     optimized_gcode: gcode::GCode,
 
     last_position: (f64, f64, f64),
-    current_position: (f64, f64, f64),
     current_layer: u32,
     current_z: f64,
     last_extrusion: f64,
@@ -186,8 +187,10 @@ impl Optimizer {
                     self.last_extrusion = *e;
 
                     text = format!("G1 {} E{:.5}", text, e);
+                    self.optimized_gcode.stats.increment_extrusion(distance_3d(self.last_position, n));
                 } else {
                     text = format!("G0 {}", text);
+                    self.optimized_gcode.stats.increment_travel(distance_3d(self.last_position, n));
                 }
 
                 // Add feedrate if needed
@@ -206,6 +209,7 @@ impl Optimizer {
 
                 // Update previous node
                 prev_node = node;
+                self.last_position = n;
 
             } else {
                 process = line.starts_with("TOUR_SECTION");
@@ -278,7 +282,6 @@ fn main() {
             gcode::CoordinatesMode::Absolute,
             gcode::CoordinatesMode::Relative),
         last_position: (0.0, 0.0, 0.0),
-        current_position: (0.0, 0.0, 0.0),
         current_layer: 0,
         current_z: 0.0,
         last_extrusion: 0.0,
@@ -289,4 +292,10 @@ fn main() {
     optimizer.optimize();
 
     optimizer.optimized_gcode.write();
+
+    // Display stats
+    println!("Base G-code stats:");
+    optimizer.base_gcode.stats.display();
+    println!("Optimized G-code stats:");
+    optimizer.optimized_gcode.stats.display();
 }

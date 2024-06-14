@@ -4,8 +4,27 @@ mod quick_math;
 
 use std::{env, fs};
 use std::path::Path;
-
 use quick_math::distance_3d;
+
+/*
+TODO (problems) :
+- Correct feedrates
+- Merge travel movements
+- Treat PrusaSlicer's commands
+*/
+
+/*
+TODO (optimizations) :
+- Initial tour for LKH
+- LKH parameters
+- Merge extrusion movements
+- Multi-threading
+- Usage of Z-hops only
+- Problems separation according to size
+- Multiple layers
+- Deletion of negligible movements
+- Usage of LKH via source code instead of calling the program
+*/
 
 struct Optimizer {
     config: config::Config,
@@ -52,6 +71,8 @@ impl Optimizer {
         for layer in layers.iter() {
 
             if layer.nodes.len() as u32 > self.config.minimum_nodes {
+                println!("Solving layer {}/{} ({} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
+
                 let parameters_path = format!("{}.par", self.current_layer);
                 let tsp_path = format!("{}.tsp", self.current_layer);
                 let result_path = format!("result_{}.tour", self.current_layer);
@@ -97,7 +118,8 @@ impl Optimizer {
             "PROBLEM_FILE = {}\n\
             TOUR_FILE = {}\n\
             PRECISION = {}\n\
-            RUNS = {}\n",
+            RUNS = {}\n\
+            CANDIDATE_SET_TYPE = POPMUSIC\n",
             tsp_path, 
             result_path, 
             self.config.precision, 
@@ -294,8 +316,8 @@ fn main() {
     optimizer.optimized_gcode.write();
 
     // Display stats
-    println!("Base G-code stats:");
+    println!("\nBase G-code stats:");
     optimizer.base_gcode.stats.display();
-    println!("Optimized G-code stats:");
+    println!("\nOptimized G-code stats:");
     optimizer.optimized_gcode.stats.display();
 }

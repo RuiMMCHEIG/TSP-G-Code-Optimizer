@@ -8,7 +8,6 @@ use quick_math::distance_3d;
 
 /*
 TODO (problems) :
-- Stats incorrectes pour Slic3r et PrusaSlicer
 - Treat PrusaSlicer's commands (Low feedrate : issue related to acceleration commands)
 */
 

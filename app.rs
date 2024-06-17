@@ -8,21 +8,18 @@ use quick_math::distance_3d;
 
 /*
 TODO (problems) :
-- Correct feedrates
-- Merge travel movements
-- Treat PrusaSlicer's commands
+- Treat PrusaSlicer's commands (Low feedrate : issue related to acceleration commands)
 */
 
 /*
 TODO (optimizations) :
-- Initial tour for LKH
-- LKH parameters
 - Merge extrusion movements
 - Multi-threading
 - Usage of Z-hops only
 - Problems separation according to size
 - Multiple layers
 - Deletion of negligible movements
+- LKH parameters (Initial tour for LKH, other parameters, etc...)
 - Usage of LKH via source code instead of calling the program
 */
 
@@ -34,7 +31,6 @@ struct Optimizer {
 
     last_position: (f64, f64, f64),
     current_layer: u32,
-    current_z: f64,
     last_extrusion: f64,
 }
 
@@ -218,7 +214,8 @@ impl Optimizer {
                 // Add feedrate if needed
                 let f = layer.feedrates.get(
                     if node - prev_node == 1 { &pno }
-                    else { &no }
+                    else if node - prev_node == -1 { &no }
+                    else { &0 } // Will give default travel feedrate, this is used for new travel movements
                 );
 
                 if f > Some(&0.0) {
@@ -305,7 +302,6 @@ fn main() {
             gcode::CoordinatesMode::Relative),
         last_position: (0.0, 0.0, 0.0),
         current_layer: 0,
-        current_z: 0.0,
         last_extrusion: 0.0,
     };
 

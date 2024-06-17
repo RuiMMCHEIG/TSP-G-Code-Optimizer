@@ -85,7 +85,10 @@ impl GCode {
         let mut current_position: (f64, f64, f64);
         let mut current_layer: u32 = 0;
         let mut current_z = 0.0;
+        let mut current_feedrate = 1500.0; // Default feedrate (1500 = 25 mm/s, safe value)
         let mut last_extrusion = 0.0;
+        let mut last_travel_position = (0.0, 0.0, 0.0);
+        let mut last_loop_travel = false;
 
         for line in gcode.contents.lines() {
             line_num += 1;
@@ -133,6 +136,9 @@ impl GCode {
 
                     // Process a change of layer
                     if current_position.2 != current_z && extrudes {
+                        if last_loop_travel {
+                            last_loop_travel = false;
+                        }
                         current_layer += 1;
                         current_z = current_position.2;
 
@@ -144,20 +150,43 @@ impl GCode {
                         });
 
                         gcode.layers[current_layer as usize].nodes.push(last_position);
+                        gcode.layers[current_layer as usize].feedrates.insert(0, 9000.0); // Default travel feedrate (150 mm/s)
                     }
 
+                    // nodes
                     let layer = &mut gcode.layers[current_layer as usize];
-                    layer.nodes.push(current_position);
+                    if extrudes {
+                        if last_loop_travel {
+                            layer.nodes.push(last_travel_position);
+                            last_loop_travel = false;
+                        }
+                        layer.nodes.push(current_position);
+                    } else if gcode.position_mode != CoordinatesMode::Relative {
+                        last_travel_position = current_position;
+                    } else {
+                        last_travel_position = 
+                            (last_travel_position.0 + current_position.0, 
+                            last_travel_position.1 + current_position.1, 
+                            last_travel_position.2 + current_position.2);
+                    }
 
+                    // extrusions
                     if extrudes {
                         layer.extrusions.insert(layer.nodes.len() as u32 - 1, extrusion);
+                    } else {
+                        last_loop_travel = true;
                     }
 
+                    // feedrates
+                    let n = layer.nodes.len() as u32 - if last_loop_travel { 0 } else { 1 };
                     if feedrate > 0.0 {
-                        layer.feedrates.insert(layer.nodes.len() as u32 - 1, feedrate);
+                        layer.feedrates.insert(n, feedrate);
+                        current_feedrate = feedrate;
+                    } else {
+                        layer.feedrates.insert(n, current_feedrate);
                     }
 
-                    // Update last position and extrusion
+                    // Update last position, extrusion and feedrate
                     if gcode.position_mode != CoordinatesMode::Relative {
                         last_position = current_position;
                     }
@@ -223,17 +252,27 @@ impl GCode {
                     gcode.extruder_mode = CoordinatesMode::Relative;
                 },
                 // Bed temperature and other configuration commands
-                Some("M84") | Some("M104") | Some("M107") | Some("M109") | Some("M140") | Some("M190") | Some("T0") => {
+                Some("M84") | Some("M104") | Some("M107") | Some("M109") | Some("M140") | Some("M190") | Some("T0")
+                | Some("G4") | Some("M593") | Some("M572") | Some("M142") | Some("M900") | Some("M221") | Some("M569")
+                | Some("G29") | Some("M302") | Some("M555") | Some("M115") | Some("M17") | Some("M203") | Some("M205")
+                | Some("M862.1") | Some("M862.3") | Some("M862.5") | Some("M862.6") => {
                     if current_layer == 0 {
                         gcode.start_commands.push_str(&format!("{}\n", line));
                     } else {
                         gcode.end_commands.push_str(&format!("{}\n", line));
                     }
                 },
-                // Turn on fan
+                // M106 : Turn on fan
                 Some("M106") => {
-                    gcode.end_commands.push_str(&format!("{}\n", line));
+                    // TODO : Find a better solution to handle fan commands
+                    gcode.layers[current_layer as usize].end_commands.push_str(&format!("{}\n", line));
                 },
+                // Ignore for now, TODO : Find a solution to handle these commands
+                // M73 : Set/Get build percentage
+                // M74 : Set weight on print bed
+                // M201 : Set max acceleration
+                // M204 : Set default acceleration / Set PID values (Repetier)
+                Some("M73") | Some("M74") | Some("M201") | Some("M204") => (),
                 // Unknown commands
                 Some(command) => {
                     if !command.starts_with(';') {

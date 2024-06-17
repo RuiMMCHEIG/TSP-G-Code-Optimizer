@@ -108,7 +108,7 @@ impl GCode {
                             Some('E') => {
                                 extrusion = part[1..].parse().unwrap();
 
-                                if gcode.position_mode != CoordinatesMode::Relative {
+                                if gcode.extruder_mode != CoordinatesMode::Relative {
                                     extrusion -= last_extrusion;
                                 }
 

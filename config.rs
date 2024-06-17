@@ -6,8 +6,7 @@ pub struct Config {
     pub program: String,
     pub minimum_nodes: u32,
     pub precision: u32,
-    pub num_runs: u32,
-    pub time_limit: u32
+    pub num_runs: u32
 }
 
 pub fn read_config(path: &str) -> Config {

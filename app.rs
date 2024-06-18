@@ -2,6 +2,7 @@ mod config;
 mod gcode;
 mod quick_math;
 
+use std::time::Instant;
 use std::{env, fs};
 use std::path::Path;
 use quick_math::distance_3d;
@@ -238,6 +239,8 @@ impl Optimizer {
 }
 
 fn main() {
+    let now = Instant::now();
+
     // Get both file paths from command line arguments
     let args: Vec<String> = env::args().collect();
 
@@ -316,4 +319,22 @@ fn main() {
     optimizer.base_gcode.stats.display();
     println!("\nOptimized G-code stats:");
     optimizer.optimized_gcode.stats.display();
+
+    println!("\nOptimization completed in {}", elapsed_time(now));
+}
+
+fn elapsed_time(now: Instant) -> String {
+    let elapsed = now.elapsed();
+    let secs = elapsed.as_secs();
+    let millis = elapsed.subsec_millis();
+
+    if secs > 60 {
+        let mins = secs / 60;
+        let secs = secs % 60;
+        format!("{}m {}s", mins, secs)
+    } else if secs > 0 {
+        format!("{}s {}ms", secs, millis)
+    } else {
+        format!("{}ms", millis)
+    }
 }

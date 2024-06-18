@@ -67,37 +67,39 @@ impl Optimizer {
         let layers = self.base_gcode.layers.to_vec();
         for layer in layers.iter() {
 
-            println!("Solving layer {}/{} ({} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
+            if layer.nodes.len() as u32 > self.config.minimum_nodes {
+                println!("Solving layer {}/{} ({} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
-            let parameters_path = format!("{}.par", self.current_layer);
-            let tsp_path = format!("{}.tsp", self.current_layer);
-            let result_path = format!("result_{}.tour", self.current_layer);
+                let parameters_path = format!("{}.par", self.current_layer);
+                let tsp_path = format!("{}.tsp", self.current_layer);
+                let result_path = format!("result_{}.tour", self.current_layer);
 
-            // Write parameters file
-            self.write_parameters_file(&parameters_path, &tsp_path, &result_path);
+                // Write parameters file
+                self.write_parameters_file(&parameters_path, &tsp_path, &result_path);
 
-            // Write TSP file
-            self.write_tsp_file(&tsp_path, layer);
+                // Write TSP file
+                self.write_tsp_file(&tsp_path, layer);
 
-            // Run TSP solver
-            std::process::Command::new(&self.config.program)
-                .arg(&parameters_path)
-                .output()
-                .expect("Failed to run TSP solver");
+                // Run TSP solver
+                std::process::Command::new(&self.config.program)
+                    .arg(&parameters_path)
+                    .output()
+                    .expect("Failed to run TSP solver");
 
-            // Read result file
-            let result = fs::read_to_string(&result_path)
-                .unwrap_or_else(|_| panic!("Unable to read file {}", result_path));
+                // Read result file
+                let result = fs::read_to_string(&result_path)
+                    .unwrap_or_else(|_| panic!("Unable to read file {}", result_path));
 
-            self.read_optimized_tour(&result, layer);
+                self.read_optimized_tour(&result, layer);
 
-            // Clean up
-            fs::remove_file(&parameters_path).unwrap();
-            fs::remove_file(&tsp_path).unwrap();
-            fs::remove_file(&result_path).unwrap();
+                // Clean up
+                fs::remove_file(&parameters_path).unwrap();
+                fs::remove_file(&tsp_path).unwrap();
+                fs::remove_file(&result_path).unwrap();
 
-            // Write buffer
-            self.optimized_gcode.contents.push_str(&layer.end_commands);
+                // Write buffer
+                self.optimized_gcode.contents.push_str(&layer.end_commands);
+            }
 
             // Update current position
             self.current_layer += 1;

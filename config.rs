@@ -5,7 +5,8 @@ use serde::Deserialize;
 pub struct Config {
     pub program: String,
     pub precision: u32,
-    pub num_runs: u32
+    pub num_runs: u32,
+    pub max_merge_length: f64,
 }
 
 pub fn read_config(path: &str) -> Config {

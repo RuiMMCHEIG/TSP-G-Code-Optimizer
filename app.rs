@@ -67,7 +67,7 @@ impl Optimizer {
         let layers = self.base_gcode.layers.to_vec();
         for layer in layers.iter() {
 
-            if layer.nodes.len() as u32 > self.config.minimum_nodes {
+            if layer.nodes.len() as u32 > 3 {
                 println!("Solving layer {}/{} ({} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
                 let parameters_path = format!("{}.par", self.current_layer);
@@ -96,10 +96,17 @@ impl Optimizer {
                 fs::remove_file(&parameters_path).unwrap();
                 fs::remove_file(&tsp_path).unwrap();
                 fs::remove_file(&result_path).unwrap();
+            } else {
+                println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
-                // Write buffer
-                self.optimized_gcode.contents.push_str(&layer.end_commands);
+                self.add_line(layer, 1, 1);
+                for i in 2..layer.nodes.len() as i32 {
+                    self.add_line(layer, i - 1, i);
+                }
             }
+
+            // Write buffer
+            self.optimized_gcode.contents.push_str(&layer.end_commands);
 
             // Update current position
             self.current_layer += 1;
@@ -157,6 +164,69 @@ impl Optimizer {
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
     }
 
+    fn add_line(&mut self, layer: &gcode::GCodeLayer, origin: i32, destination: i32) {
+        let pno = origin as u32;
+        let no = destination as u32;
+        
+        let n = layer.nodes[destination as usize - 1];
+
+        let mut x = n.0;
+        let mut y = n.1;
+        let mut z = n.2;
+
+        if self.optimized_gcode.position_mode == gcode::CoordinatesMode::Relative {
+            let p = layer.nodes[origin as usize - 1];
+
+            x -= p.0;
+            y -= p.1;
+            z -= p.2;
+        }
+
+        // Prepare new g-code line
+        let mut text = format!("X{} Y{} Z{}", x, y, z);
+
+        if (destination - origin == 1 && layer.extrusions.contains_key(&pno)) ||
+            (destination - origin == -1 && layer.extrusions.contains_key(&no)) {
+            
+            // Take a change of direction into account
+            let mut e = layer.extrusions.get(
+                if destination - origin == 1 { &pno }
+                else { &no }
+            ).unwrap();
+            
+            let extr = e + self.last_extrusion;
+            if self.optimized_gcode.extruder_mode == gcode::CoordinatesMode::Absolute {
+                e = &extr;
+            }
+            
+            self.last_extrusion = *e;
+
+            text = format!("G1 {} E{:.5}", text, e);
+            self.optimized_gcode.stats.increment_extrusion(distance_3d(self.last_position, n));
+        } else {
+            text = format!("G0 {}", text);
+            self.optimized_gcode.stats.increment_travel(distance_3d(self.last_position, n));
+        }
+
+        // Add feedrate if needed
+        let f = layer.feedrates.get(
+            if destination - origin == 1 { &pno }
+            else if destination - origin == -1 { &no }
+            else { &0 } // Will give default travel feedrate, this is used for new travel movements
+        );
+
+        if f > Some(&0.0) {
+            text = format!("{} F{:.3}", text, f.unwrap());
+        }
+
+        // Add new line to optimized G-code
+        self.optimized_gcode.contents.push_str(&text);
+        self.optimized_gcode.contents.push('\n');
+
+        // Update previous node
+        self.last_position = n;
+    }
+
     fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
         let mut process = false;
         let mut prev_node = 1;
@@ -169,67 +239,11 @@ impl Optimizer {
                 if node == -1 {
                     break;
                 }
-                let pno = prev_node as u32;
-                let no = node as u32;
 
-                let n = layer.nodes[node as usize - 1];
-
-                let mut x = n.0;
-                let mut y = n.1;
-                let mut z = n.2;
-
-                if self.optimized_gcode.position_mode == gcode::CoordinatesMode::Relative {
-                    let p = layer.nodes[prev_node as usize - 1];
-
-                    x -= p.0;
-                    y -= p.1;
-                    z -= p.2;
-                }
-
-                // Prepare new g-code line
-                let mut text = format!("X{} Y{} Z{}", x, y, z);
-
-                if (node - prev_node == 1 && layer.extrusions.contains_key(&(prev_node as u32))) ||
-                    (node - prev_node == -1 && layer.extrusions.contains_key(&(node as u32))) {
-                    
-                    // Take a change of direction into account
-                    let mut e = layer.extrusions.get(
-                        if node - prev_node == 1 { &pno }
-                        else { &no }
-                    ).unwrap();
-                    
-                    let extr = e + self.last_extrusion;
-                    if self.optimized_gcode.extruder_mode == gcode::CoordinatesMode::Absolute {
-                        e = &extr;
-                    }
-                    
-                    self.last_extrusion = *e;
-
-                    text = format!("G1 {} E{:.5}", text, e);
-                    self.optimized_gcode.stats.increment_extrusion(distance_3d(self.last_position, n));
-                } else {
-                    text = format!("G0 {}", text);
-                    self.optimized_gcode.stats.increment_travel(distance_3d(self.last_position, n));
-                }
-
-                // Add feedrate if needed
-                let f = layer.feedrates.get(
-                    if node - prev_node == 1 { &pno }
-                    else if node - prev_node == -1 { &no }
-                    else { &0 } // Will give default travel feedrate, this is used for new travel movements
-                );
-
-                if f > Some(&0.0) {
-                    text = format!("{} F{:.3}", text, f.unwrap());
-                }
-
-                // Add new line to optimized G-code
-                self.optimized_gcode.contents.push_str(&text);
-                self.optimized_gcode.contents.push('\n');
+                self.add_line(layer, prev_node, node);
 
                 // Update previous node
                 prev_node = node;
-                self.last_position = n;
 
             } else {
                 process = line.starts_with("TOUR_SECTION");

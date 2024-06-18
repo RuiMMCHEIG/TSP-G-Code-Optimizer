@@ -4,7 +4,6 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct Config {
     pub program: String,
-    pub minimum_nodes: u32,
     pub precision: u32,
     pub num_runs: u32
 }

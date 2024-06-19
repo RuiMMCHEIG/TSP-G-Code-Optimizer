@@ -96,11 +96,9 @@ impl Optimizer {
                 self.read_optimized_tour(&result, layer);
 
                 // Clean up
-                if self.current_layer != 80 {
-                    fs::remove_file(&parameters_path).unwrap();
-                    fs::remove_file(&tsp_path).unwrap();
-                    fs::remove_file(&result_path).unwrap();
-                }
+                fs::remove_file(&parameters_path).unwrap();
+                fs::remove_file(&tsp_path).unwrap();
+                fs::remove_file(&result_path).unwrap();
             } else {
                 println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
@@ -171,14 +169,6 @@ impl Optimizer {
         for key in keys.iter() {
             tsp.push_str(&format!("{} {}\n", key, key + 1));
         }
-        /*for (key, value) in self.merges.get(&self.current_layer).unwrap().iter() {
-            if key == &count {
-                break;
-            }
-            if layer.extrusions.contains_key(value) {
-                tsp.push_str(&format!("{} {}\n", key, key + 1));
-            }
-        }*/
         tsp.push_str(&format!("{} {}\n", count, 1));
         tsp.push_str("-1\nEOF\n");
 

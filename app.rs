@@ -164,6 +164,30 @@ impl Optimizer {
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
     }
 
+    fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
+        let mut process = false;
+        let mut prev_node = 1;
+
+        for line in result.lines() {
+            if process {
+
+                // Gather next node position
+                let node = line.parse::<i32>().unwrap();
+                if node == -1 {
+                    break;
+                }
+
+                self.add_line(layer, prev_node, node);
+
+                // Update previous node
+                prev_node = node;
+
+            } else {
+                process = line.starts_with("TOUR_SECTION");
+            }
+        }
+    }
+
     fn add_line(&mut self, layer: &gcode::GCodeLayer, origin: i32, destination: i32) {
         let pno = origin as u32;
         let no = destination as u32;
@@ -225,30 +249,6 @@ impl Optimizer {
 
         // Update previous node
         self.last_position = n;
-    }
-
-    fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
-        let mut process = false;
-        let mut prev_node = 1;
-
-        for line in result.lines() {
-            if process {
-
-                // Gather next node position
-                let node = line.parse::<i32>().unwrap();
-                if node == -1 {
-                    break;
-                }
-
-                self.add_line(layer, prev_node, node);
-
-                // Update previous node
-                prev_node = node;
-
-            } else {
-                process = line.starts_with("TOUR_SECTION");
-            }
-        }
     }
 }
 

@@ -2,6 +2,7 @@ mod config;
 mod gcode;
 mod quick_math;
 
+use std::collections::HashMap;
 use std::time::Instant;
 use std::{env, fs};
 use std::path::Path;
@@ -33,6 +34,8 @@ struct Optimizer {
     last_position: (f64, f64, f64),
     current_layer: u32,
     last_extrusion: f64,
+
+    merges: HashMap<u32, HashMap<u32, u32>>,
 }
 
 impl Optimizer {
@@ -67,8 +70,8 @@ impl Optimizer {
         let layers = self.base_gcode.layers.to_vec();
         for layer in layers.iter() {
 
-            if layer.nodes.len() as u32 > 3 {
-                println!("Solving layer {}/{} ({} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
+            if layer.nodes.len() > 3 {
+                print!("Solving layer {}/{} ({} -> ", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
                 let parameters_path = format!("{}.par", self.current_layer);
                 let tsp_path = format!("{}.tsp", self.current_layer);
@@ -93,14 +96,16 @@ impl Optimizer {
                 self.read_optimized_tour(&result, layer);
 
                 // Clean up
-                fs::remove_file(&parameters_path).unwrap();
-                fs::remove_file(&tsp_path).unwrap();
-                fs::remove_file(&result_path).unwrap();
+                if self.current_layer != 80 {
+                    fs::remove_file(&parameters_path).unwrap();
+                    fs::remove_file(&tsp_path).unwrap();
+                    fs::remove_file(&result_path).unwrap();
+                }
             } else {
                 println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
                 self.add_line(layer, 1, 1);
-                for i in 2..layer.nodes.len() as i32 {
+                for i in 2..=layer.nodes.len() as i32 {
                     self.add_line(layer, i - 1, i);
                 }
             }
@@ -134,31 +139,62 @@ impl Optimizer {
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
     }
 
-    fn write_tsp_file(&self, path: &str, layer: &gcode::GCodeLayer) {
-        let mut tsp = format!(
-            "NAME: {}\n\
-            COMMENT: {}\n\
-            TYPE: TSP\n\
-            DIMENSION: {}\n\
-            EDGE_WEIGHT_TYPE: EUC_3D\n\
-            NODE_COORD_SECTION\n",
-            format_args!("Layer {}", self.current_layer),
-            format_args!("Print optimization for current_layer {}", self.current_layer),
-            layer.nodes.len()
-        );
+    fn write_tsp_file(&mut self, path: &str, layer: &gcode::GCodeLayer) {
+        let mut tsp = "EDGE_WEIGHT_TYPE: EUC_3D\nNODE_COORD_SECTION\n".to_string();
+
+        let mut keys: Vec<u32> = Vec::new();
 
         // Write nodes
+        let mut count = 0;
+        let mut extruded = false;
         for (i, node) in layer.nodes.iter().enumerate() {
-            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", i + 1, node.0, node.1, node.2));
+            let extrude = layer.extrusions.contains_key(&(i as u32 + 1));
+
+            if !extrude || !extruded {
+                count += 1;
+                tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+                self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                if extrude {
+                    keys.push(count);
+                }
+            }
+            extruded = extrude;
+        }
+        if extruded {
+            count += 1;
+            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[0].0, layer.nodes[0].1, layer.nodes[0].2));
+            self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, layer.nodes.len() as u32);
         }
 
         // Write mandatory edges
         tsp.push_str("FIXED_EDGES_SECTION\n");
-        for edge in layer.extrusions.iter() {
-            tsp.push_str(&format!("{} {}\n", edge.0, edge.0 + 1));
+        for key in keys.iter() {
+            tsp.push_str(&format!("{} {}\n", key, key + 1));
         }
-        tsp.push_str(&format!("{} {}\n", layer.nodes.len(), 1));
+        /*for (key, value) in self.merges.get(&self.current_layer).unwrap().iter() {
+            if key == &count {
+                break;
+            }
+            if layer.extrusions.contains_key(value) {
+                tsp.push_str(&format!("{} {}\n", key, key + 1));
+            }
+        }*/
+        tsp.push_str(&format!("{} {}\n", count, 1));
         tsp.push_str("-1\nEOF\n");
+
+        tsp = format!(
+            "NAME: {}\n\
+            COMMENT: {}\n\
+            TYPE: TSP\n\
+            DIMENSION: {}\n\
+            {}",
+            format_args!("Layer {}", self.current_layer),
+            format_args!("Print optimization for current_layer {}", self.current_layer),
+            count, 
+            tsp
+        );
+
+        println!("{} nodes)", count);
 
         fs::write(path, tsp)
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
@@ -166,7 +202,7 @@ impl Optimizer {
 
     fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
         let mut process = false;
-        let mut prev_node = 1;
+        let mut prev_node: i32 = 1;
 
         for line in result.lines() {
             if process {
@@ -177,7 +213,20 @@ impl Optimizer {
                     break;
                 }
 
-                self.add_line(layer, prev_node, node);
+                let from = self.merges.get(&self.current_layer).unwrap().get(&(prev_node as u32)).unwrap();
+                let to = self.merges.get(&self.current_layer).unwrap().get(&(node as u32)).unwrap();
+
+                if node - prev_node == 1 {
+                    for i in *from..*to {
+                        self.add_line(layer, i as i32, i as i32 + 1);
+                    }
+                } else if node - prev_node == -1 {
+                    for i in (*to..*from).rev() {
+                        self.add_line(layer, i as i32 + 1, i as i32);
+                    }
+                } else {
+                    self.add_line(layer, *from as i32, *to as i32);
+                }
 
                 // Update previous node
                 prev_node = node;
@@ -320,6 +369,7 @@ fn main() {
         last_position: (0.0, 0.0, 0.0),
         current_layer: 0,
         last_extrusion: 0.0,
+        merges: HashMap::new(),
     };
 
     optimizer.set_units();

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use log::warn;
+use log::{info, warn};
 use crate::quick_math::{get_position, distance_3d, distance_to_origin};
 
 #[derive(PartialEq)]
@@ -272,7 +272,9 @@ impl GCode {
                 // M74 : Set weight on print bed
                 // M201 : Set max acceleration
                 // M204 : Set default acceleration / Set PID values (Repetier)
-                Some("M73") | Some("M74") | Some("M201") | Some("M204") => (),
+                Some("M73") | Some("M74") | Some("M201") | Some("M204") => {
+                    info!("Command {} not treated yet", line);
+                },
                 // Unknown commands
                 Some(command) => {
                     if !command.starts_with(';') {
@@ -331,6 +333,16 @@ impl GCodeStats {
         };
         println!("Extrusion distance: {:.2} {}", self.extrusion_distance, units);
         println!("Travel distance: {:.2} {}", self.travel_distance, units);
+    }
+
+    pub fn log(&self, info: String) {
+        let units = match self.units_mode {
+            UnitsMode::Millimeters => "mm",
+            UnitsMode::Inches => "in",
+            UnitsMode::NotSet => "units",
+        };
+        info!("{}, extrusion distance: {:.2} {}", info, self.extrusion_distance, units);
+        info!("{}, travel distance: {:.2} {}", info, self.travel_distance, units);
     }
 
     pub fn increment_extrusion(&mut self, distance: f64) {

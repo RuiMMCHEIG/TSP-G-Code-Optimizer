@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use std::{env, fs};
 use std::path::Path;
+use log::info;
 use quick_math::distance_3d;
 
 /*
@@ -185,6 +186,7 @@ impl Optimizer {
         );
 
         println!("{} nodes)", count);
+        info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, self.current_layer);
 
         fs::write(path, tsp)
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
@@ -371,10 +373,25 @@ fn main() {
     // Display stats
     println!("\nBase G-code stats:");
     optimizer.base_gcode.stats.display();
+    optimizer.base_gcode.stats.log("Base G-code".to_string());
     println!("\nOptimized G-code stats:");
     optimizer.optimized_gcode.stats.display();
+    optimizer.optimized_gcode.stats.log("Optimized G-code".to_string());
 
-    println!("\nOptimization completed in {}", elapsed_time(now));
+    // Store nodes and merges sizes into a CSV file
+    let csv_path = format!("{}.csv", gcode_path);
+    let mut csv = String::new();
+    csv.push_str("Layer,Nodes,Merged\n");
+    for (layer, merges) in optimizer.merges.iter() {
+        csv.push_str(&format!("{},{},{}\n", layer, optimizer.base_gcode.layers[*layer as usize].nodes.len(), merges.len()));
+    }
+    fs::write(&csv_path, csv)
+        .unwrap_or_else(|_| panic!("Unable to write file {}", csv_path));
+
+    // Time
+    let time = elapsed_time(now);
+    println!("\nOptimization completed in {}", time);
+    info!("Completed in {}", time);
 }
 
 fn elapsed_time(now: Instant) -> String {

@@ -146,6 +146,8 @@ impl Optimizer {
         // Write nodes
         let mut count = 0;
         let mut extruded = false;
+        let mut last_position = (0.0, 0.0, 0.0);
+        let mut current_distance = 0.0;
         for (i, node) in layer.nodes.iter().enumerate() {
             let extrude = layer.extrusions.contains_key(&(i as u32 + 1));
 
@@ -155,13 +157,28 @@ impl Optimizer {
                 self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
                 if extrude {
                     keys.push(count);
+                } else {
+                    current_distance = 0.0;
+                }
+            } else {
+                current_distance += distance_3d(last_position, *node);
+                if current_distance > self.config.max_merge_length {
+                    count += 1;
+                    tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                    current_distance = 0.0;
+                    count += 1;
+                    tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                    keys.push(count);
                 }
             }
             extruded = extrude;
+            last_position = *node;
         }
         if extruded {
             count += 1;
-            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[0].0, layer.nodes[0].1, layer.nodes[0].2));
+            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[layer.nodes.len() - 1].0, layer.nodes[layer.nodes.len() - 1].1, layer.nodes[layer.nodes.len() - 1].2));
             self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, layer.nodes.len() as u32);
         }
 

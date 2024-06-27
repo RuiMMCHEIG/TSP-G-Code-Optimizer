@@ -15,7 +15,7 @@ pub fn read_config(path: &str) -> Config {
     let reader = BufReader::new(file);
 
     // Check that file contains JSON
-    let config: Config = serde_json::from_reader(reader)
+    let mut config: Config = serde_json::from_reader(reader)
         .unwrap_or_else(|_| panic!("Unable to parse JSON in file {}", path));
 
     // Check that program is set and exists
@@ -25,6 +25,15 @@ pub fn read_config(path: &str) -> Config {
     
     if !Path::new(&config.program).exists() {
         panic!("Program {} does not exist", config.program);
+    }
+
+    if config.max_merge_length == 0.0 {
+        config = Config {
+            program: config.program,
+            precision: config.precision,
+            num_runs: config.num_runs,
+            max_merge_length: f64::INFINITY,
+        };
     }
 
     config

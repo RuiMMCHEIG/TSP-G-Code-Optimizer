@@ -89,7 +89,6 @@ impl GCode {
         let mut last_extrusion = 0.0;
         let mut last_travel_position = (0.0, 0.0, 0.0);
         let mut last_loop_travel = false;
-        let mut z_height = 0.0;
 
         for line in gcode.contents.lines() {
             line_num += 1;
@@ -137,7 +136,6 @@ impl GCode {
 
                     // Process a change of layer
                     if current_position.2 != current_z && extrudes {
-                        z_height = current_position.2 - current_z;
                         if last_loop_travel {
                             last_loop_travel = false;
                         }

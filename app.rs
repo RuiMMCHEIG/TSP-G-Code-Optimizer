@@ -11,12 +11,12 @@ use quick_math::distance_3d;
 
 /*
 TODO (problems) :
-- Treat PrusaSlicer's commands (Low feedrate : issue related to acceleration commands)
+- Low feedrate on some g-codes : issue related to acceleration commands
+- PrusaSlicer related commands need to be treated
 */
 
 /*
 TODO (optimizations) :
-- Merge extrusion movements
 - Multi-threading
 - Usage of Z-hops only
 - Problems separation according to size

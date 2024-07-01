@@ -72,11 +72,13 @@ impl Optimizer {
         let layers = self.base_gcode.layers.to_vec();
         for layer in layers.iter() {
 
+            let current_layer = self.current_layer;
+
             if layer.nodes.len() > 3 {
 
-                let parameters_path = format!("{}.par", self.current_layer);
-                let tsp_path = format!("{}.tsp", self.current_layer);
-                let result_path = format!("result_{}.tour", self.current_layer);
+                let parameters_path = format!("{}.par", current_layer);
+                let tsp_path = format!("{}.tsp", current_layer);
+                let result_path = format!("result_{}.tour", current_layer);
 
                 // Write parameters file
                 self.write_parameters_file(&parameters_path, &tsp_path, &result_path);
@@ -90,7 +92,7 @@ impl Optimizer {
                     .output()
                     .expect("Failed to run TSP solver");
             } else {
-                println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
+                println!("Skipping layer {}/{} ({} node-s)", current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
             }
 
             // Update current position

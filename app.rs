@@ -37,6 +37,7 @@ struct Optimizer {
     last_extrusion: f64,
 
     merges: HashMap<u32, HashMap<u32, u32>>,
+    threads: HashMap<u32, std::thread::JoinHandle<()>>,
 }
 
 impl Optimizer {
@@ -89,6 +90,22 @@ impl Optimizer {
                     .arg(&parameters_path)
                     .output()
                     .expect("Failed to run TSP solver");
+            } else {
+                println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
+            }
+
+            // Update current position
+            self.current_layer += 1;
+        }
+
+        // Reset position
+        self.current_layer = 0;
+
+        for layer in layers.iter() {
+            if layer.nodes.len() > 3 {
+                let parameters_path = format!("{}.par", self.current_layer);
+                let tsp_path = format!("{}.tsp", self.current_layer);
+                let result_path = format!("result_{}.tour", self.current_layer);
 
                 // Read result file
                 let result = fs::read_to_string(&result_path)
@@ -101,8 +118,6 @@ impl Optimizer {
                 fs::remove_file(&tsp_path).unwrap();
                 fs::remove_file(&result_path).unwrap();
             } else {
-                println!("Skipping layer {}/{} ({} node-s)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
-
                 self.add_line(layer, 1, 1);
                 for i in 2..=layer.nodes.len() as i32 {
                     self.add_line(layer, i - 1, i);
@@ -304,7 +319,7 @@ fn write_tsp_file(path: &str, layer: &gcode::GCodeLayer, base_gcode_size: usize,
         tsp
     );
 
-    print!("Solving layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
+    println!("Solving layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
     info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, current_layer);
 
     fs::write(path, tsp)
@@ -380,6 +395,7 @@ fn main() {
         current_layer: 0,
         last_extrusion: 0.0,
         merges: HashMap::new(),
+        threads: HashMap::new(),
     };
 
     optimizer.set_units();

@@ -1,7 +1,7 @@
 use std::{fs::File, io::BufReader, path::Path};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Config {
     pub program: String,
     pub precision: u32,

@@ -3,8 +3,9 @@ mod gcode;
 mod quick_math;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use std::{env, fs};
+use std::{env, fs, thread};
 use std::path::Path;
 use log::info;
 use quick_math::distance_3d;
@@ -17,7 +18,6 @@ TODO (problems) :
 
 /*
 TODO (optimizations) :
-- Multi-threading
 - Usage of Z-hops only
 - Problems separation according to size
 - Multiple layers
@@ -35,9 +35,6 @@ struct Optimizer {
     last_position: (f64, f64, f64),
     current_layer: u32,
     last_extrusion: f64,
-
-    merges: HashMap<u32, HashMap<u32, u32>>,
-    threads: HashMap<u32, std::thread::JoinHandle<()>>,
 }
 
 impl Optimizer {
@@ -45,7 +42,7 @@ impl Optimizer {
         self.optimized_gcode.stats.units_mode = self.base_gcode.stats.units_mode;
     }
 
-    fn optimize(&mut self) {
+    fn optimize(&mut self, gcode_path: &str) {
         // Start of file
         self.optimized_gcode.contents.push_str(";Generated with TSP G-code optimizer V0.1\n");
         self.optimized_gcode.contents.push_str(&format!(";Original file: {}\n", self.base_gcode.file_path));
@@ -70,30 +67,44 @@ impl Optimizer {
 
         // Optimize G-code
         let layers = self.base_gcode.layers.to_vec();
+        let layers: &'static [gcode::GCodeLayer] = Box::leak(layers.into_boxed_slice());
+        let merges: Arc<Mutex<HashMap<u32, HashMap<u32, u32>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let mut threads: HashMap<u32, std::thread::JoinHandle<()>> = HashMap::new();
         for layer in layers.iter() {
 
             let current_layer = self.current_layer;
+            let base_gcode_size = self.base_gcode.layers.len() - 1;
+            let config = self.config.clone();
+            let mrg = Arc::clone(&merges);
 
-            if layer.nodes.len() > 3 {
+            let handle= thread::spawn(move || {
+                // Do something
+                if layer.nodes.len() > 3 {
+                    let parameters_path = format!("{}.par", current_layer);
+                    let tsp_path = format!("{}.tsp", current_layer);
+                    let result_path = format!("result_{}.tour", current_layer);
 
-                let parameters_path = format!("{}.par", current_layer);
-                let tsp_path = format!("{}.tsp", current_layer);
-                let result_path = format!("result_{}.tour", current_layer);
+                    // Write parameters file
+                    Optimizer::write_parameters_file(&parameters_path, &tsp_path, &result_path, &config);
 
-                // Write parameters file
-                self.write_parameters_file(&parameters_path, &tsp_path, &result_path);
+                    // Write TSP file
+                    let current_layer_merges = Optimizer::write_tsp_file(&tsp_path, layer, current_layer, &config, base_gcode_size);
 
-                // Write TSP file
-                self.write_tsp_file(&tsp_path, layer);
+                    // Store merges
+                    mrg.lock().unwrap().insert(current_layer, current_layer_merges);
 
-                // Run TSP solver
-                std::process::Command::new(&self.config.program)
-                    .arg(&parameters_path)
-                    .output()
-                    .expect("Failed to run TSP solver");
-            } else {
-                println!("Skipping layer {}/{} ({} node-s)", current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
-            }
+                    // Run TSP solver
+                    std::process::Command::new(&config.program)
+                        .arg(&parameters_path)
+                        .output()
+                        .expect("Failed to run TSP solver");
+                } else {
+                    println!("Skipping layer {}/{} ({} node-s)", current_layer, base_gcode_size, layer.nodes.len());
+                }
+            });
+
+            // Store thread
+            threads.insert(self.current_layer, handle);
 
             // Update current position
             self.current_layer += 1;
@@ -103,6 +114,8 @@ impl Optimizer {
         self.current_layer = 0;
 
         for layer in layers.iter() {
+            let _ = threads.remove(&self.current_layer).unwrap().join();
+
             if layer.nodes.len() > 3 {
                 let parameters_path = format!("{}.par", self.current_layer);
                 let tsp_path = format!("{}.tsp", self.current_layer);
@@ -112,7 +125,7 @@ impl Optimizer {
                 let result = fs::read_to_string(&result_path)
                     .unwrap_or_else(|_| panic!("Unable to read file {}", result_path));
 
-                self.read_optimized_tour(&result, layer);
+                self.read_optimized_tour(&result, layer, merges.lock().unwrap().clone());
 
                 // Clean up
                 fs::remove_file(&parameters_path).unwrap();
@@ -135,9 +148,19 @@ impl Optimizer {
         // End of file
         self.optimized_gcode.contents.push_str("M107\n");
         self.optimized_gcode.contents.push_str(&self.base_gcode.end_commands);
+
+        // Store nodes and merges sizes into a CSV file
+        let csv_path = format!("{}.csv", gcode_path);
+        let mut csv = String::new();
+        csv.push_str("Layer,Nodes,Merged\n");
+        for (layer, merges) in merges.lock().unwrap().iter() {
+            csv.push_str(&format!("{},{},{}\n", layer, self.base_gcode.layers[*layer as usize].nodes.len(), merges.len()));
+        }
+        fs::write(&csv_path, csv)
+            .unwrap_or_else(|_| panic!("Unable to write file {}", csv_path));
     }
 
-    fn write_parameters_file(&self, path: &str, tsp_path: &str, result_path: &str) {
+    fn write_parameters_file(path: &str, tsp_path: &str, result_path: &str, config: &config::Config) {
         let parameters = format!(
             "PROBLEM_FILE = {}\n\
             TOUR_FILE = {}\n\
@@ -146,15 +169,19 @@ impl Optimizer {
             CANDIDATE_SET_TYPE = POPMUSIC\n",
             tsp_path, 
             result_path, 
-            self.config.precision, 
-            self.config.num_runs
+            config.precision, 
+            config.num_runs
         );
 
         fs::write(path, parameters)
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
     }
 
-    fn write_tsp_file(&mut self, path: &str, layer: &gcode::GCodeLayer) {
+    fn write_tsp_file(path: &str, layer: &gcode::GCodeLayer, current_layer: u32,
+        config: &config::Config, base_gcode_size: usize) -> HashMap<u32, u32> {
+
+        let mut merges: HashMap<u32, u32> = HashMap::new();
+
         let mut tsp = "EDGE_WEIGHT_TYPE: EUC_3D\nNODE_COORD_SECTION\n".to_string();
 
         let mut keys: Vec<u32> = Vec::new();
@@ -170,7 +197,7 @@ impl Optimizer {
             if !extrude || !extruded {
                 count += 1;
                 tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                merges.insert(count, i as u32 + 1);
                 if extrude {
                     keys.push(count);
                 } else {
@@ -178,14 +205,14 @@ impl Optimizer {
                 }
             } else {
                 current_distance += distance_3d(last_position, *node);
-                if current_distance > self.config.max_merge_length {
+                if current_distance > config.max_merge_length {
                     count += 1;
                     tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                    merges.insert(count, i as u32 + 1);
                     current_distance = 0.0;
                     count += 1;
                     tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                    merges.insert(count, i as u32 + 1);
                     keys.push(count);
                 }
             }
@@ -195,7 +222,7 @@ impl Optimizer {
         if extruded {
             count += 1;
             tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[layer.nodes.len() - 1].0, layer.nodes[layer.nodes.len() - 1].1, layer.nodes[layer.nodes.len() - 1].2));
-            self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, layer.nodes.len() as u32);
+            merges.insert(count, layer.nodes.len() as u32);
         }
 
         // Write mandatory edges
@@ -212,20 +239,22 @@ impl Optimizer {
             TYPE: TSP\n\
             DIMENSION: {}\n\
             {}",
-            format_args!("Layer {}", self.current_layer),
-            format_args!("Print optimization for current_layer {}", self.current_layer),
+            format_args!("Layer {}", current_layer),
+            format_args!("Print optimization for current_layer {}", current_layer),
             count, 
             tsp
         );
 
-        println!("Solving layer {}/{} ({} -> {} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len(), count);
-        info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, self.current_layer);
+        println!("Solving layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
+        info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, current_layer);
 
         fs::write(path, tsp)
             .unwrap_or_else(|_| panic!("Unable to write file {}", path));
+
+        merges
     }
 
-    fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
+    fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer, merges: HashMap<u32, HashMap<u32, u32>>) {
         let mut process = false;
         let mut prev_node: i32 = 1;
 
@@ -238,8 +267,8 @@ impl Optimizer {
                     break;
                 }
 
-                let from = self.merges.get(&self.current_layer).unwrap().get(&(prev_node as u32)).unwrap();
-                let to = self.merges.get(&self.current_layer).unwrap().get(&(node as u32)).unwrap();
+                let from = merges.get(&self.current_layer).unwrap().get(&(prev_node as u32)).unwrap();
+                let to = merges.get(&self.current_layer).unwrap().get(&(node as u32)).unwrap();
 
                 if node - prev_node == 1 {
                     for i in *from..*to {
@@ -394,13 +423,11 @@ fn main() {
         last_position: (0.0, 0.0, 0.0),
         current_layer: 0,
         last_extrusion: 0.0,
-        merges: HashMap::new(),
-        threads: HashMap::new(),
     };
 
     optimizer.set_units();
 
-    optimizer.optimize();
+    optimizer.optimize(gcode_path);
 
     optimizer.optimized_gcode.write();
 
@@ -411,16 +438,6 @@ fn main() {
     println!("\nOptimized G-code stats:");
     optimizer.optimized_gcode.stats.display();
     optimizer.optimized_gcode.stats.log("Optimized G-code".to_string());
-
-    // Store nodes and merges sizes into a CSV file
-    let csv_path = format!("{}.csv", gcode_path);
-    let mut csv = String::new();
-    csv.push_str("Layer,Nodes,Merged\n");
-    for (layer, merges) in optimizer.merges.iter() {
-        csv.push_str(&format!("{},{},{}\n", layer, optimizer.base_gcode.layers[*layer as usize].nodes.len(), merges.len()));
-    }
-    fs::write(&csv_path, csv)
-        .unwrap_or_else(|_| panic!("Unable to write file {}", csv_path));
 
     // Time
     let time = elapsed_time(now);

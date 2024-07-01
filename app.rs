@@ -72,7 +72,6 @@ impl Optimizer {
         for layer in layers.iter() {
 
             if layer.nodes.len() > 3 {
-                print!("Solving layer {}/{} ({} -> ", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len());
 
                 let parameters_path = format!("{}.par", self.current_layer);
                 let tsp_path = format!("{}.tsp", self.current_layer);
@@ -202,7 +201,7 @@ impl Optimizer {
             tsp
         );
 
-        println!("{} nodes)", count);
+        print!("Solving layer {}/{} ({} -> {} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len(), count);
         info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, self.current_layer);
 
         fs::write(path, tsp)

@@ -89,11 +89,13 @@ impl Optimizer {
 
                     // Write TSP file
                     let current_layer_merges = Optimizer::write_tsp_file(&tsp_path, layer, current_layer, &config, base_gcode_size);
+                    let count = current_layer_merges.len();
 
                     // Store merges
                     mrg.lock().unwrap().insert(current_layer, current_layer_merges);
 
                     // Run TSP solver
+                    println!("Running TSP solver for layer {}/{} ({} nodes)", current_layer, base_gcode_size, count);
                     std::process::Command::new(&config.program)
                         .arg(&parameters_path)
                         .output()
@@ -115,6 +117,7 @@ impl Optimizer {
 
         for layer in layers.iter() {
             let _ = threads.remove(&self.current_layer).unwrap().join();
+            println!("Processing result of layer {}/{}", self.current_layer, self.base_gcode.layers.len() - 1);
 
             if layer.nodes.len() > 3 {
                 let parameters_path = format!("{}.par", self.current_layer);
@@ -245,7 +248,7 @@ impl Optimizer {
             tsp
         );
 
-        println!("Solving layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
+        println!("Merging layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
         info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, current_layer);
 
         fs::write(path, tsp)

@@ -218,7 +218,7 @@ impl Optimizer {
             tsp
         );
 
-        print!("Solving layer {}/{} ({} -> {} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len(), count);
+        println!("Solving layer {}/{} ({} -> {} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len(), count);
         info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, self.current_layer);
 
         fs::write(path, tsp)

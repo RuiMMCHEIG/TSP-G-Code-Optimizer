@@ -78,10 +78,11 @@ impl Optimizer {
                 let result_path = format!("result_{}.tour", self.current_layer);
 
                 // Write parameters file
-                self.write_parameters_file(&parameters_path, &tsp_path, &result_path);
+                write_parameters_file(&parameters_path, &tsp_path, &result_path, &self.config);
 
                 // Write TSP file
-                self.write_tsp_file(&tsp_path, layer);
+                write_tsp_file(&tsp_path, layer, self.base_gcode.layers.len() - 1, 
+                    &mut self.merges, self.current_layer, &self.config);
 
                 // Run TSP solver
                 std::process::Command::new(&self.config.program)
@@ -118,94 +119,6 @@ impl Optimizer {
         // End of file
         self.optimized_gcode.contents.push_str("M107\n");
         self.optimized_gcode.contents.push_str(&self.base_gcode.end_commands);
-    }
-
-    fn write_parameters_file(&self, path: &str, tsp_path: &str, result_path: &str) {
-        let parameters = format!(
-            "PROBLEM_FILE = {}\n\
-            TOUR_FILE = {}\n\
-            PRECISION = {}\n\
-            RUNS = {}\n\
-            CANDIDATE_SET_TYPE = POPMUSIC\n",
-            tsp_path, 
-            result_path, 
-            self.config.precision, 
-            self.config.num_runs
-        );
-
-        fs::write(path, parameters)
-            .unwrap_or_else(|_| panic!("Unable to write file {}", path));
-    }
-
-    fn write_tsp_file(&mut self, path: &str, layer: &gcode::GCodeLayer) {
-        let mut tsp = "EDGE_WEIGHT_TYPE: EUC_3D\nNODE_COORD_SECTION\n".to_string();
-
-        let mut keys: Vec<u32> = Vec::new();
-
-        // Write nodes
-        let mut count = 0;
-        let mut extruded = false;
-        let mut last_position = (0.0, 0.0, 0.0);
-        let mut current_distance = 0.0;
-        for (i, node) in layer.nodes.iter().enumerate() {
-            let extrude = layer.extrusions.contains_key(&(i as u32 + 1));
-
-            if !extrude || !extruded {
-                count += 1;
-                tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
-                if extrude {
-                    keys.push(count);
-                } else {
-                    current_distance = 0.0;
-                }
-            } else {
-                current_distance += distance_3d(last_position, *node);
-                if current_distance > self.config.max_merge_length {
-                    count += 1;
-                    tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
-                    current_distance = 0.0;
-                    count += 1;
-                    tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
-                    self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
-                    keys.push(count);
-                }
-            }
-            extruded = extrude;
-            last_position = *node;
-        }
-        if extruded {
-            count += 1;
-            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[layer.nodes.len() - 1].0, layer.nodes[layer.nodes.len() - 1].1, layer.nodes[layer.nodes.len() - 1].2));
-            self.merges.entry(self.current_layer).or_insert(HashMap::new()).insert(count, layer.nodes.len() as u32);
-        }
-
-        // Write mandatory edges
-        tsp.push_str("FIXED_EDGES_SECTION\n");
-        for key in keys.iter() {
-            tsp.push_str(&format!("{} {}\n", key, key + 1));
-        }
-        tsp.push_str(&format!("{} {}\n", count, 1));
-        tsp.push_str("-1\nEOF\n");
-
-        tsp = format!(
-            "NAME: {}\n\
-            COMMENT: {}\n\
-            TYPE: TSP\n\
-            DIMENSION: {}\n\
-            {}",
-            format_args!("Layer {}", self.current_layer),
-            format_args!("Print optimization for current_layer {}", self.current_layer),
-            count, 
-            tsp
-        );
-
-        print!("Solving layer {}/{} ({} -> {} nodes)", self.current_layer, self.base_gcode.layers.len() - 1, layer.nodes.len(), count);
-        info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, self.current_layer);
-
-        fs::write(path, tsp)
-            .unwrap_or_else(|_| panic!("Unable to write file {}", path));
     }
 
     fn read_optimized_tour(&mut self, result: &str, layer: &gcode::GCodeLayer) {
@@ -307,6 +220,95 @@ impl Optimizer {
         // Update previous node
         self.last_position = n;
     }
+}
+
+fn write_parameters_file(path: &str, tsp_path: &str, result_path: &str, config: &config::Config) {
+    let parameters = format!(
+        "PROBLEM_FILE = {}\n\
+        TOUR_FILE = {}\n\
+        PRECISION = {}\n\
+        RUNS = {}\n\
+        CANDIDATE_SET_TYPE = POPMUSIC\n",
+        tsp_path, 
+        result_path, 
+        config.precision, 
+        config.num_runs
+    );
+
+    fs::write(path, parameters)
+        .unwrap_or_else(|_| panic!("Unable to write file {}", path));
+}
+
+fn write_tsp_file(path: &str, layer: &gcode::GCodeLayer, base_gcode_size: usize,
+    merges: &mut HashMap<u32, HashMap<u32, u32>>, current_layer: u32, config: &config::Config) {
+    let mut tsp = "EDGE_WEIGHT_TYPE: EUC_3D\nNODE_COORD_SECTION\n".to_string();
+
+    let mut keys: Vec<u32> = Vec::new();
+
+    // Write nodes
+    let mut count = 0;
+    let mut extruded = false;
+    let mut last_position = (0.0, 0.0, 0.0);
+    let mut current_distance = 0.0;
+    for (i, node) in layer.nodes.iter().enumerate() {
+        let extrude = layer.extrusions.contains_key(&(i as u32 + 1));
+
+        if !extrude || !extruded {
+            count += 1;
+            tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+            merges.entry(current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+            if extrude {
+                keys.push(count);
+            } else {
+                current_distance = 0.0;
+            }
+        } else {
+            current_distance += distance_3d(last_position, *node);
+            if current_distance > config.max_merge_length {
+                count += 1;
+                tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+                merges.entry(current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                current_distance = 0.0;
+                count += 1;
+                tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, node.0, node.1, node.2));
+                merges.entry(current_layer).or_insert(HashMap::new()).insert(count, i as u32 + 1);
+                keys.push(count);
+            }
+        }
+        extruded = extrude;
+        last_position = *node;
+    }
+    if extruded {
+        count += 1;
+        tsp.push_str(&format!("{} {:.3} {:.3} {:.3}\n", count, layer.nodes[layer.nodes.len() - 1].0, layer.nodes[layer.nodes.len() - 1].1, layer.nodes[layer.nodes.len() - 1].2));
+        merges.entry(current_layer).or_insert(HashMap::new()).insert(count, layer.nodes.len() as u32);
+    }
+
+    // Write mandatory edges
+    tsp.push_str("FIXED_EDGES_SECTION\n");
+    for key in keys.iter() {
+        tsp.push_str(&format!("{} {}\n", key, key + 1));
+    }
+    tsp.push_str(&format!("{} {}\n", count, 1));
+    tsp.push_str("-1\nEOF\n");
+
+    tsp = format!(
+        "NAME: {}\n\
+        COMMENT: {}\n\
+        TYPE: TSP\n\
+        DIMENSION: {}\n\
+        {}",
+        format_args!("Layer {}", current_layer),
+        format_args!("Print optimization for current_layer {}", current_layer),
+        count, 
+        tsp
+    );
+
+    print!("Solving layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
+    info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, current_layer);
+
+    fs::write(path, tsp)
+        .unwrap_or_else(|_| panic!("Unable to write file {}", path));
 }
 
 fn main() {

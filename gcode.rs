@@ -263,17 +263,19 @@ impl GCode {
                     }
                 },
                 // M106 : Turn on fan
-                Some("M106") => {
-                    // TODO : Find a better solution to handle fan commands
+                // M201 : Set max acceleration
+                Some("M106") | Some("M201") => {
                     gcode.layers[current_layer as usize].end_commands.push_str(&format!("{}\n", line));
                 },
-                // Ignore for now, TODO : Find a solution to handle these commands
+                // M204 : Set default acceleration
+                Some("M204") => {
+                    // TODO : Handle M204 command
+                    info!("Command {} not treated yet", line);
+                },
                 // M73 : Set/Get build percentage
                 // M74 : Set weight on print bed
-                // M201 : Set max acceleration
-                // M204 : Set default acceleration / Set PID values (Repetier)
-                Some("M73") | Some("M74") | Some("M201") | Some("M204") => {
-                    info!("Command {} not treated yet", line);
+                Some("M73") | Some("M74") => {
+                    //Ignore
                 },
                 // Unknown commands
                 Some(command) => {

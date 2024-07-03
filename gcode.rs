@@ -31,6 +31,8 @@ pub struct GCode {
     travel_count: u32,
     extrude_count: u32,
     pub stats: GCodeStats,
+    pub hop_retraction: f64,
+    pub retraction_mult: f64,
 }
 
 pub struct GCodeStats {
@@ -70,6 +72,8 @@ impl GCode {
                 travel_distance: 0.0,
                 units_mode: UnitsMode::NotSet,
             },
+            hop_retraction: 0.0,
+            retraction_mult: 0.0,
         };
 
         gcode.layers.push(GCodeLayer {
@@ -113,6 +117,16 @@ impl GCode {
                                 }
 
                                 extrudes = extrusion > 0.0;
+
+                                if gcode.retraction_mult == 0.0 && extrusion < 0.0 {
+                                    let distance = distance_3d(current_position, last_position);
+                                    if distance > 0.0 {
+                                        gcode.retraction_mult = extrusion / distance;
+                                    }
+                                }
+                                if gcode.hop_retraction == 0.0 && extrusion < 0.0 && distance_3d(current_position, last_position) == 0.0 {
+                                    gcode.hop_retraction = extrusion;
+                                }
                             },
                             Some('F') => feedrate = part[1..].parse().unwrap(),
                             _ => (),
@@ -316,6 +330,8 @@ impl GCode {
                 travel_distance: 0.0,
                 units_mode: UnitsMode::NotSet,
             },
+            hop_retraction: 0.0,
+            retraction_mult: 0.0,
         }
     }
 

@@ -12,8 +12,7 @@ use quick_math::distance_3d;
 
 /*
 TODO (problems) :
-- Low feedrate on some g-codes : issue related to acceleration commands
-- PrusaSlicer related commands need to be treated
+- Command M204 (Set default acceleration)
 */
 
 /*
@@ -334,8 +333,18 @@ impl Optimizer {
             text = format!("G1 {} E{:.5}", text, e);
             self.optimized_gcode.stats.increment_extrusion(distance_3d(self.last_position, n));
         } else {
-            text = format!("G0 {}", text);
-            self.optimized_gcode.stats.increment_travel(distance_3d(self.last_position, n));
+            let distance = distance_3d(self.last_position, n);
+            
+            if self.base_gcode.retraction_mult != 0.0 {
+                text = format!("G0 {} E{:.5}", text, self.base_gcode.retraction_mult * distance);
+            } else {
+                text = format!("G0 {}", text);
+            }
+            self.optimized_gcode.stats.increment_travel(distance);
+
+            /*if self.base_gcode.hop_retraction != 0.0 {
+                text = format!("G1 E{:.5}\n{}", self.base_gcode.hop_retraction, text);
+            }*/
         }
 
         // Add feedrate if needed

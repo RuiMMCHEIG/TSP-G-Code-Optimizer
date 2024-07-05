@@ -101,6 +101,10 @@ impl GCode {
             match line.split_whitespace().next() {
                 Some("G0") | Some("G1") => {
                     current_position = get_position(line, last_position);
+
+                    if current_position == last_position {
+                        continue;
+                    }
                     
                     // Process extrusion and feed rate
                     let mut extrudes = false;
@@ -139,6 +143,10 @@ impl GCode {
                     } else {
                         distance_to_origin(current_position)
                     };
+
+                    if feedrate > 0.0 {
+                        current_feedrate = feedrate;
+                    }
 
                     if extrudes {
                         gcode.extrude_count += 1;
@@ -193,12 +201,7 @@ impl GCode {
 
                     // feedrates
                     let n = layer.nodes.len() as u32 - if last_loop_travel { 0 } else { 1 };
-                    if feedrate > 0.0 {
-                        layer.feedrates.insert(n, feedrate);
-                        current_feedrate = feedrate;
-                    } else {
-                        layer.feedrates.insert(n, current_feedrate);
-                    }
+                    layer.feedrates.insert(n, current_feedrate);
 
                     // Update last position, extrusion and feedrate
                     if gcode.position_mode != CoordinatesMode::Relative {

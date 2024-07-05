@@ -78,7 +78,7 @@ impl Optimizer {
 
             let handle= thread::spawn(move || {
                 // Do something
-                if layer.nodes.len() > 3 {
+                if layer.nodes.len() > 5 {
                     let parameters_path = format!("{}.par", current_layer);
                     let tsp_path = format!("{}.tsp", current_layer);
                     let result_path = format!("result_{}.tour", current_layer);
@@ -118,7 +118,7 @@ impl Optimizer {
             let _ = threads.remove(&self.current_layer).unwrap().join();
             println!("Processing result of layer {}/{}", self.current_layer, self.base_gcode.layers.len() - 1);
 
-            if layer.nodes.len() > 3 {
+            if layer.nodes.len() > 5 {
                 let parameters_path = format!("{}.par", self.current_layer);
                 let tsp_path = format!("{}.tsp", self.current_layer);
                 let result_path = format!("result_{}.tour", self.current_layer);
@@ -335,11 +335,11 @@ impl Optimizer {
         } else {
             let distance = distance_3d(self.last_position, n);
             
-            if self.base_gcode.retraction_mult != 0.0 {
+            /*if self.base_gcode.retraction_mult != 0.0 {
                 text = format!("G0 {} E{:.5}", text, self.base_gcode.retraction_mult * distance);
-            } else {
+            } else {*/
                 text = format!("G0 {}", text);
-            }
+            //}
             self.optimized_gcode.stats.increment_travel(distance);
 
             /*if self.base_gcode.hop_retraction != 0.0 {

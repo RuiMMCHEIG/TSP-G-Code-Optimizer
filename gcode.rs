@@ -101,10 +101,6 @@ impl GCode {
             match line.split_whitespace().next() {
                 Some("G0") | Some("G1") => {
                     current_position = get_position(line, last_position);
-
-                    if current_position == last_position {
-                        continue;
-                    }
                     
                     // Process extrusion and feed rate
                     let mut extrudes = false;
@@ -146,6 +142,10 @@ impl GCode {
 
                     if feedrate > 0.0 {
                         current_feedrate = feedrate;
+                    }
+
+                    if current_position == last_position {
+                        continue;
                     }
 
                     if extrudes {

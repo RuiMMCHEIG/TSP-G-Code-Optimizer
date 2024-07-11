@@ -4,9 +4,10 @@ mod quick_math;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 use std::path::Path;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use log::info;
 use quick_math::distance_3d;
 
@@ -53,6 +54,32 @@ impl Optimizer {
         }
         self.optimized_gcode.contents.push_str(&self.base_gcode.start_commands);
         self.optimized_gcode.contents.push_str("G92 E0\n");
+    
+        // Progress bars
+        let merging_bar = Arc::new(Mutex::new(ProgressBar::new(self.base_gcode.layers.len() as u64)));
+        let solving_bar = Arc::new(Mutex::new(ProgressBar::new(self.base_gcode.layers.len() as u64)));
+        let processing_bar = ProgressBar::new(self.base_gcode.layers.len() as u64);
+
+        let multi_progress = MultiProgress::new();
+        let mb = merging_bar.lock().unwrap().clone();
+        let sb = solving_bar.lock().unwrap().clone();
+        let pb = processing_bar.clone();
+        multi_progress.add(mb);
+        multi_progress.add(sb);
+        multi_progress.add(pb);
+
+        let style = ProgressStyle::with_template("{msg:48} : {wide_bar} {pos}/{len}").unwrap();
+
+        merging_bar.lock().unwrap().set_style(style.clone());
+        merging_bar.lock().unwrap().set_message("Merging nodes for each layer");
+        solving_bar.lock().unwrap().set_style(style.clone());
+        solving_bar.lock().unwrap().set_message("Solving TSP for each layer");
+        processing_bar.set_style(style.clone());
+        processing_bar.set_message("Processing results and writing optimized G-code");
+
+        merging_bar.lock().unwrap().enable_steady_tick(Duration::from_millis(100));
+        solving_bar.lock().unwrap().enable_steady_tick(Duration::from_millis(100));
+        processing_bar.enable_steady_tick(Duration::from_millis(100));
 
         // Optimize G-code
         let layers = self.base_gcode.layers.to_vec();
@@ -62,9 +89,10 @@ impl Optimizer {
         for layer in layers.iter() {
 
             let current_layer = self.current_layer;
-            let base_gcode_size = self.base_gcode.layers.len() - 1;
             let config = self.config.clone();
             let mrg = Arc::clone(&merges);
+            let merge_bar = Arc::clone(&merging_bar);
+            let solve_bar = Arc::clone(&solving_bar);
 
             let handle= thread::spawn(move || {
                 // Do something
@@ -77,20 +105,22 @@ impl Optimizer {
                     Optimizer::write_parameters_file(&parameters_path, &tsp_path, &result_path, &config);
 
                     // Write TSP file
-                    let current_layer_merges = Optimizer::write_tsp_file(&tsp_path, layer, current_layer, &config, base_gcode_size);
-                    let count = current_layer_merges.len();
+                    let current_layer_merges = Optimizer::write_tsp_file(&tsp_path, layer, current_layer, &config);
+                    merge_bar.lock().unwrap().inc(1);
 
                     // Store merges
                     mrg.lock().unwrap().insert(current_layer, current_layer_merges);
 
                     // Run TSP solver
-                    println!("Running TSP solver for layer {}/{} ({} nodes)", current_layer, base_gcode_size, count);
                     std::process::Command::new(&config.program)
                         .arg(&parameters_path)
                         .output()
                         .expect("Failed to run TSP solver");
+                    solve_bar.lock().unwrap().inc(1);
                 } else {
-                    println!("Skipping layer {}/{} ({} node-s)", current_layer, base_gcode_size, layer.nodes.len());
+                    merge_bar.lock().unwrap().inc(1);
+                    solve_bar.lock().unwrap().inc(1);
+                    //println!("Skipping layer {}/{} ({} node-s)", current_layer, base_gcode_size, layer.nodes.len());
                 }
             });
 
@@ -106,7 +136,7 @@ impl Optimizer {
 
         for layer in layers.iter() {
             let _ = threads.remove(&self.current_layer).unwrap().join();
-            println!("Processing result of layer {}/{}", self.current_layer, self.base_gcode.layers.len() - 1);
+            processing_bar.inc(1);
 
             if layer.nodes.len() > 5 {
                 //let parameters_path = format!("{}/{}.par", TSP_FOLDER, self.current_layer);
@@ -136,6 +166,9 @@ impl Optimizer {
             // Update current position
             self.current_layer += 1;
         }
+        merging_bar.lock().unwrap().finish();
+        solving_bar.lock().unwrap().finish();
+        processing_bar.finish();
 
         // End of file
         self.optimized_gcode.contents.push_str("M107\n");
@@ -173,7 +206,7 @@ impl Optimizer {
     }
 
     fn write_tsp_file(path: &str, layer: &gcode::GCodeLayer, current_layer: u32,
-        config: &config::Config, base_gcode_size: usize) -> HashMap<u32, u32> {
+        config: &config::Config) -> HashMap<u32, u32> {
 
         let mut merges: HashMap<u32, u32> = HashMap::new();
 
@@ -240,7 +273,6 @@ impl Optimizer {
             tsp
         );
 
-        println!("Merging layer {}/{} ({} -> {} nodes)", current_layer, base_gcode_size, layer.nodes.len(), count);
         info!("Merged {} nodes into {} for layer {}", layer.nodes.len(), count, current_layer);
 
         fs::write(path, tsp)
@@ -457,7 +489,7 @@ fn main() {
     optimizer.optimized_gcode.write();
 
     // Display stats
-    println!("\nBase G-code stats:");
+    println!("\n\nBase G-code stats:");
     optimizer.base_gcode.stats.display();
     optimizer.base_gcode.stats.log("Base G-code".to_string());
     println!("\nOptimized G-code stats:");

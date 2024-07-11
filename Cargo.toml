@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.38"
 fern = "0.6.2"
+indicatif = "0.17.8"
 log = "0.4.21"
 num-format = "0.4.4"
 serde = { version = "1.0.202", features = ["derive"] }

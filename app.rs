@@ -10,20 +10,10 @@ use std::path::Path;
 use log::info;
 use quick_math::distance_3d;
 
-/*
-TODO (problems) :
-- Command M204 (Set default acceleration)
-*/
-
-/*
-TODO (optimizations) :
-- Usage of Z-hops only
-- Problems separation according to size
-- Multiple layers
-- Deletion of negligible movements
-- LKH parameters (Initial tour for LKH, other parameters, etc...)
-- Usage of LKH via source code instead of calling the program
-*/
+// Folders
+const TSP_FOLDER: &str = "tsp";
+const LOGS_FOLDER: &str = "logs";
+const STATS_FOLDER: &str = "stats";
 
 struct Optimizer {
     config: config::Config,
@@ -79,9 +69,9 @@ impl Optimizer {
             let handle= thread::spawn(move || {
                 // Do something
                 if layer.nodes.len() > 5 {
-                    let parameters_path = format!("{}.par", current_layer);
-                    let tsp_path = format!("{}.tsp", current_layer);
-                    let result_path = format!("result_{}.tour", current_layer);
+                    let parameters_path = format!("{}/{}.par", TSP_FOLDER, current_layer);
+                    let tsp_path = format!("{}/{}.tsp", TSP_FOLDER, current_layer);
+                    let result_path = format!("{}/result_{}.tour", TSP_FOLDER, current_layer);
 
                     // Write parameters file
                     Optimizer::write_parameters_file(&parameters_path, &tsp_path, &result_path, &config);
@@ -119,9 +109,9 @@ impl Optimizer {
             println!("Processing result of layer {}/{}", self.current_layer, self.base_gcode.layers.len() - 1);
 
             if layer.nodes.len() > 5 {
-                let parameters_path = format!("{}.par", self.current_layer);
-                let tsp_path = format!("{}.tsp", self.current_layer);
-                let result_path = format!("result_{}.tour", self.current_layer);
+                //let parameters_path = format!("{}/{}.par", TSP_FOLDER, self.current_layer);
+                //let tsp_path = format!("{}/{}.tsp", TSP_FOLDER, self.current_layer);
+                let result_path = format!("{}/result_{}.tour", TSP_FOLDER, self.current_layer);
 
                 // Read result file
                 let result = fs::read_to_string(&result_path)
@@ -130,9 +120,9 @@ impl Optimizer {
                 self.read_optimized_tour(&result, layer, merges.lock().unwrap().clone());
 
                 // Clean up
-                fs::remove_file(&parameters_path).unwrap();
-                fs::remove_file(&tsp_path).unwrap();
-                fs::remove_file(&result_path).unwrap();
+                //fs::remove_file(&parameters_path).unwrap();
+                //fs::remove_file(&tsp_path).unwrap();
+                //fs::remove_file(&result_path).unwrap();
             } else {
                 self.add_line(layer, 1, 1);
                 for i in 2..=layer.nodes.len() as i32 {
@@ -151,8 +141,11 @@ impl Optimizer {
         self.optimized_gcode.contents.push_str("M107\n");
         self.optimized_gcode.contents.push_str(&self.base_gcode.end_commands);
 
+        // Separate file name without extension from path
+        let gcode_file = Path::new(gcode_path).file_stem().unwrap().to_str().unwrap();
+
         // Store nodes and merges sizes into a CSV file
-        let csv_path = format!("{}.csv", gcode_path);
+        let csv_path = format!("{}/{}.csv", STATS_FOLDER, gcode_file);
         let mut csv = String::new();
         csv.push_str("Layer,Nodes,Merged\n");
         for (layer, merges) in merges.lock().unwrap().iter() {
@@ -404,8 +397,28 @@ fn main() {
         panic!("File {} is empty", gcode_path);
     }
 
+    // Create folders if they don't exist
+    if !Path::new(TSP_FOLDER).exists() {
+        fs::create_dir(TSP_FOLDER)
+            .unwrap_or_else(|_| panic!("Unable to create folder {}", TSP_FOLDER));
+    }
+
+    if !Path::new(LOGS_FOLDER).exists() {
+        fs::create_dir(LOGS_FOLDER)
+            .unwrap_or_else(|_| panic!("Unable to create folder {}", LOGS_FOLDER));
+    }
+
+    if !Path::new(STATS_FOLDER).exists() {
+        fs::create_dir(STATS_FOLDER)
+            .unwrap_or_else(|_| panic!("Unable to create folder {}", STATS_FOLDER));
+    }
+
+    // Separate file name without extension from path
+    let gcode_file = path_gcode.file_stem().unwrap().to_str().unwrap();
+    let gcode_folder = path_gcode.parent().unwrap().to_str().unwrap();
+
     // Set log file
-    let log_path = format!("{}.log", gcode_path);
+    let log_path = format!("{}/{}.log", LOGS_FOLDER, gcode_file);
     if Path::new(&log_path).exists() {
         fs::remove_file(&log_path)
             .unwrap_or_else(|_| panic!("Unable to replace {}", log_path));
@@ -424,7 +437,7 @@ fn main() {
         .unwrap_or_else(|_| panic!("Unable to set log file {}", log_path));
 
     // Setup optimizer
-    let optimized_file = format!("{}_optimized.gcode", gcode_path);
+    let optimized_file = format!("{}/{}_optimized.gcode", gcode_folder, gcode_file);
 
     let mut optimizer = Optimizer {
         config,

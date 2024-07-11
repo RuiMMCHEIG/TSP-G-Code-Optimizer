@@ -5,3 +5,9 @@ LKH*
 perf.data*
 
 *.config
+
+logs/
+
+stats/
+
+tsp/

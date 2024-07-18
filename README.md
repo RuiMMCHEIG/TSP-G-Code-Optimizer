@@ -71,7 +71,7 @@ rustc --version
 If that command doesn't work, you need to configure your `PATH` by following rustup-init's instructions which should have been provided at the end of the installation.
 
 Download the source code and then setup your config file with the following content (Extension doesn't matter) :
-```
+```JSON
 {
     "program": "./LKH",
     "precision": 1000,

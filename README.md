@@ -24,6 +24,8 @@ Create a config file (extension doesn't matter, the file contains a JSON structu
 }
 ```
 
+Make sure the program value points to your LKH executable.
+
 In a console (CMD or Powershell), use the following command to run the application :
 ```
 .\G-optimizer.exe your_config.json your_g-code_file.gcode
@@ -70,7 +72,7 @@ rustc --version
 
 If that command doesn't work, you need to configure your `PATH` by following rustup-init's instructions which should have been provided at the end of the installation.
 
-Download the source code and then setup your config file with the following content (Extension doesn't matter) :
+Download the source code and then create a config file with the following content (Extension doesn't matter) :
 ```JSON
 {
     "program": "./LKH",
@@ -79,6 +81,8 @@ Download the source code and then setup your config file with the following cont
     "max_merge_length": 10.000
 }
 ```
+
+Make sure that the program value points to your LKH executable generated previously.
 
 You can then run the program using the following command :
 ```
@@ -89,7 +93,7 @@ If you prefer an executable, you can use `cargo build --release` and get your ex
 
 ## Problems when running the program
 
-If your program crashes with this kind of message :
+The program might crash with this kind of message :
 ```
 thread `main` panicked at app.rs:...
 called `Option::unwrap()` on a `None` value

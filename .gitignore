@@ -11,3 +11,7 @@ logs/
 stats/
 
 tsp/
+
+G-optimizer.exe
+
+*optimized.gcode
